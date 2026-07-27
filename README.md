@@ -141,6 +141,26 @@ AI 가 넘기는 값을 그대로 믿지 않습니다. 세 곳을 막아뒀습�
 | **humanize 는 마우스만** | Camoufox 가 커서만 사람처럼 움직임 | 타이핑 간격은 `type` 도구가 직접 넣음 |
 | **창이 처음 뜰 때 포커스를 한 번 가져감** | 운영체제 동작 | 그 뒤로는 사용자 입력을 안 건드림 |
 
+## 원저작자 (Credits)
+
+이 저장소는 **껍데기(wrapper)** 입니다. 실제로 브라우저를 만들고 지문을 숨기고
+사람처럼 마우스를 움직이는 어려운 일은 전부 아래 두 프로젝트가 합니다.
+
+| | |
+|---|---|
+| **[Camoufox](https://github.com/daijro/camoufox)** by **daijro** | C++ 엔진 레벨에서 지문을 숨기는 파이어폭스. 곡선 마우스(`humanize`)도 여기 들어 있습니다. MPL-2.0 |
+| **[camoufox-js](https://github.com/apify/camoufox-js)** by **Apify** | Camoufox 를 Node.js 에서 띄우는 런처. MPL-2.0 |
+
+Camoufox 에 대한 자세한 내용은 <https://camoufox.com/> 또는
+<https://github.com/daijro/camoufox> 를 보세요.
+
 ## 라이선스
 
-MIT
+- **이 저장소의 코드**(`src/*`, 설정 파일): **MIT** — [LICENSE](./LICENSE)
+- **Camoufox** 와 **camoufox-js**: **MPL-2.0** (원저작자 소유)
+
+이 저장소는 두 프로젝트의 소스를 **담거나 고치지 않습니다.** npm 으로 가져다 쓸 뿐입니다.
+그래서 이 저장소 코드는 MIT 로 둘 수 있습니다.
+다만 Camoufox 계열 파일을 **고쳐서 배포**하실 거라면, 그 파일은 MPL-2.0 을 그대로 지켜야 합니다.
+
+전체 고지 내용은 [LICENSE](./LICENSE) 아래쪽 `THIRD-PARTY NOTICES` 에 있습니다.
