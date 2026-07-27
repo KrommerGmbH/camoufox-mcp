@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { closeBrowser, current, openBrowser, status } from './browser.js';
 import { importChromeCookies, importFirefoxCookies } from './cookies.js';
 import { outDir, writeDump } from './dump.js';
+import { assertWebUrl } from './guard.js';
 import { byRef, snapshot } from './snapshot.js';
 
 const server = new McpServer({ name: 'camoufox-mcp', version: '0.1.0' });
@@ -11,6 +12,7 @@ const server = new McpServer({ name: 'camoufox-mcp', version: '0.1.0' });
 const text = (v: unknown) => ({
   content: [{ type: 'text' as const, text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }],
 });
+
 
 server.registerTool(
   'browser_open',
@@ -59,7 +61,11 @@ server.registerTool(
       '파이어폭스는 됩니다. 크롬은 아직 안 됩니다(App-Bound 암호화).',
     inputSchema: {
       source: z.enum(['firefox', 'chrome']).describe('어느 브라우저에서 가져올지'),
-      domain: z.string().optional().describe('이 글자가 들어간 도메인만 (예: naver.com)'),
+      domain: z
+        .string()
+        .describe(
+          '가져올 도메인 (예: naver.com). 필수입니다 — 비우면 은행·메일 쿠키까지 전부 딸려옵니다.',
+        ),
     },
   },
   async ({ source, domain }) => {
@@ -83,7 +89,7 @@ server.registerTool(
   async ({ url, waitForText, timeoutMs }) => {
     const { page } = current();
     const timeout = timeoutMs ?? 30_000;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+    await page.goto(assertWebUrl(url), { waitUntil: 'domcontentloaded', timeout });
     // SPA 는 주소만 바뀌고 내용은 나중에 옵니다. 그래서 조용해질 때까지 한 번 더 기다립니다.
     await page.waitForLoadState('networkidle', { timeout }).catch(() => {});
     if (waitForText) {

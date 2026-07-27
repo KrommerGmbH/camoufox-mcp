@@ -46,8 +46,19 @@ function findFirefoxProfile(): string | null {
  */
 export async function importFirefoxCookies(
   context: BrowserContext,
-  domainFilter?: string,
+  domainFilter: string,
 ): Promise<ImportResult> {
+  // 도메인을 반드시 받습니다.
+  // 안 받으면 은행·메일까지 포함한 브라우저의 모든 로그인 쿠키가 통째로 딸려 옵니다.
+  // 자동화 창은 아무 데나 갈 수 있으므로, 필요한 사이트 것만 가져와야 합니다.
+  const domain = (domainFilter ?? '').trim().toLowerCase();
+  if (domain.length < 4 || !domain.includes('.')) {
+    throw new Error(
+      `가져올 도메인을 정확히 적어주세요 (예: naver.com). 지금 값: "${domainFilter}". ` +
+        `비워두면 브라우저의 모든 로그인 쿠키가 딸려오므로 막았습니다.`,
+    );
+  }
+  domainFilter = domain;
   const profile = findFirefoxProfile();
   if (!profile) {
     return { source: 'firefox', imported: 0, skipped: 0, note: '파이어폭스 프로필을 못 찾았습니다.' };
@@ -65,9 +76,9 @@ export async function importFirefoxCookies(
     const rows = db
       .prepare(
         `SELECT name, value, host, path, expiry, isSecure, isHttpOnly, sameSite
-           FROM moz_cookies` + (domainFilter ? ` WHERE host LIKE @like` : ''),
+           FROM moz_cookies WHERE host LIKE @like`,
       )
-      .all(domainFilter ? { like: `%${domainFilter}%` } : {}) as Array<Record<string, unknown>>;
+      .all({ like: `%${domainFilter}` }) as Array<Record<string, unknown>>;
     db.close();
 
     const cookies: PwCookie[] = [];

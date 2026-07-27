@@ -7,6 +7,19 @@ export function outDir(): string {
   return process.env.CAMOUFOX_MCP_OUT ?? path.resolve(process.cwd(), 'inspection');
 }
 
+/**
+ * menuKey 는 AI 가 지어내는 값이라 그대로 파일 이름에 쓰면 안 됩니다.
+ * "../../.ssh/id_rsa" 같은 값이 오면 저장 폴더 밖에 파일을 씁니다.
+ * 그래서 영문·숫자·`-`·`_` 만 남기고 전부 자릅니다.
+ */
+export function safeKey(menuKey: string): string {
+  const cleaned = menuKey.trim().replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 64);
+  if (!cleaned || /^-+$/.test(cleaned)) {
+    throw new Error(`menuKey 가 이상합니다: "${menuKey}". 영문·숫자·-·_ 만 쓰세요 (예: product-list)`);
+  }
+  return cleaned;
+}
+
 export interface DumpInput {
   menuKey: string;
   menuPath?: string;
@@ -24,11 +37,12 @@ export function writeDump(input: DumpInput): { json: string; md: string } {
   const dir = outDir();
   fs.mkdirSync(dir, { recursive: true });
 
-  const jsonPath = path.join(dir, `${input.menuKey}.json`);
-  const mdPath = path.join(dir, `${input.menuKey}.md`);
+  const key = safeKey(input.menuKey);
+  const jsonPath = path.join(dir, `${key}.json`);
+  const mdPath = path.join(dir, `${key}.md`);
 
   const payload = {
-    menuKey: input.menuKey,
+    menuKey: key,
     menuPath: input.menuPath ?? null,
     note: input.note ?? null,
     url: input.snap.url,
