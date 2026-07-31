@@ -8,3 +8,6 @@ profiles/
 
 # 조사 결과물(사이트 내부 구조가 들어있음)
 inspection/
+
+# 로그인 정보가 든 파일 — 절대 커밋 금지
+*.session.json

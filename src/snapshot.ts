@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { Target } from './frame.js';
 
 export interface SnapElement {
   ref: string;
@@ -29,9 +29,9 @@ export interface SnapResult {
  * 각 요소에 data-cfx-ref 를 찍어두므로, 이후 click/type 이 ref 로 정확히 그 요소를 집습니다.
  * (좌표 클릭을 절대 쓰지 않기 위한 장치입니다.)
  */
-export async function snapshot(page: Page, limit = 400): Promise<SnapResult> {
-  return page.evaluate(
-    ({ max }) => {
+export async function snapshot(target: Target, limit = 400, prefix = 'e'): Promise<SnapResult> {
+  return target.evaluate(
+    ({ max, pfx }) => {
       const CAP = 'data-cfx-ref';
       document.querySelectorAll(`[${CAP}]`).forEach((el) => el.removeAttribute(CAP));
 
@@ -111,7 +111,7 @@ export async function snapshot(page: Page, limit = 400): Promise<SnapResult> {
         if (box.width === 0 || box.height === 0) continue;
         if (style.visibility === 'hidden' || style.display === 'none') continue;
 
-        const ref = `e${++n}`;
+        const ref = `${pfx}${++n}`;
         el.setAttribute(CAP, ref);
 
         const tag = el.tagName.toLowerCase();
@@ -172,11 +172,11 @@ export async function snapshot(page: Page, limit = 400): Promise<SnapResult> {
 
       return { url: location.href, title: document.title, elements, tables, truncated };
     },
-    { max: limit },
+    { max: limit, pfx: prefix },
   );
 }
 
 /** ref 로 진짜 요소를 집습니다. 좌표는 절대 쓰지 않습니다. */
-export function byRef(page: Page, ref: string) {
-  return page.locator(`[data-cfx-ref="${ref}"]`);
+export function byRef(target: Target, ref: string) {
+  return target.locator(`[data-cfx-ref="${ref}"]`);
 }
