@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { act } from './act.js';
 import { closeBrowser, current, openBrowser, status } from './browser.js';
 import { importChromeCookies, importFirefoxCookies } from './cookies.js';
 import { outDir, writeDump } from './dump.js';
@@ -194,6 +195,40 @@ server.registerTool(
 );
 
 server.registerTool(
+  'browser_act',
+  {
+    title: '하고 · 확인하기 (DB 선택자용)',
+    description:
+      '**DB 에 저장된 선택자로 일할 때 이것을 쓰세요.** browser_click 과 달리 세 가지를 더 합니다.\n' +
+      '① 선택자 후보를 1순위부터 써 보고, **여러 개가 걸리면 찍지 않고 멈춥니다**.\n' +
+      '② 하고 나서 **기대한 결과가 됐는지 확인**합니다 (팝업 닫힘 · 주소 바뀜 · "저장되었습니다" 뜸 …).\n' +
+      '③ 안 되면 **왜 안 됐는지와 지금 화면의 비슷한 것 몇 개만** 돌려줍니다. 그걸 보고 고쳐서 다시 부르세요.\n' +
+      '예: {do:"click", selectors:["#save"], text:"저장하기", expect:{appears:"저장되었습니다"}}',
+    inputSchema: {
+      do: z.enum(['click', 'type']).describe('누르기 · 값 넣기'),
+      selectors: z.array(z.string()).optional().describe('DB 가 준 선택자 후보. 1순위부터'),
+      text: z.string().optional().describe('선택자가 다 안 될 때 쓸 글자'),
+      value: z.string().optional().describe("do:'type' 일 때 넣을 값"),
+      expect: z
+        .object({
+          gone: z.string().optional().describe('이 글자가 사라져야 함 (팝업 닫기)'),
+          appears: z.string().optional().describe('이 글자가 나타나야 함 (팝업 열기 · 저장 완료)'),
+          urlChanged: z.boolean().optional().describe('주소가 바뀌어야 함 (페이지 이동)'),
+          checked: z.boolean().optional().describe('체크 상태가 이렇게 되어야 함'),
+          value: z.string().optional().describe('칸의 값이 이렇게 되어야 함'),
+          timeoutMs: z.number().optional().describe('확인까지 기다릴 시간(기본 8초)'),
+        })
+        .optional()
+        .describe('하고 나서 이렇게 되어야 한다. 안 넣으면 결과를 확인하지 않습니다.'),
+    },
+  },
+  async (plan) => {
+    const { page } = current();
+    return text(await act(page, plan));
+  },
+);
+
+server.registerTool(
   'browser_click',
   {
     title: '클릭',
@@ -220,7 +255,9 @@ server.registerTool(
     const before = await el.isChecked().catch(() => null);
 
     try {
-      await el.click({ timeout: timeoutMs ?? 15_000 });
+      // 사람처럼 움직이는 마우스는 한 번 누르는 데 1~5초가 걸립니다(2026-08-01 실측).
+      // 짧게 끊으면 멀쩡한 클릭이 죽고, 빗나갈 수 있는 좌표 클릭으로 떨어집니다.
+      await el.click({ timeout: timeoutMs ?? 20_000 });
     } catch (e) {
       // 화면을 계속 다시 그리는 사이트에서는 "요소가 멈출 때까지" 기다림이 안 끝납니다.
       // 먼저 화면 안으로 끌어온 뒤, **요소를 집은 채로** 안전장치만 끕니다(force).

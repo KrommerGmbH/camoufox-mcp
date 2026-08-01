@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { act } from './act.js';
 import { closeBrowser, openBrowser, runningBrowsers } from './browser.js';
 import { safeKey } from './dump.js';
 import { assertWebUrl } from './guard.js';
@@ -103,6 +104,42 @@ async function main() {
   const dirty = hidden.elements.flatMap((e) => e.selectors).filter((s) => /\.ng-/.test(s.expression));
   assert.equal(dirty.length, 0, `선택자에 ng- 상태 class 가 ${dirty.length}개 남았습니다: ${dirty[0]?.expression}`);
   console.log('선택자 OK: 클릭하면 바뀌는 ng- 상태 class 가 안 들어감');
+
+  // ②-e "하고 · 확인하기" — 찍어서 누르지 않고, 결과가 다르면 실패로 알려야 합니다.
+  //
+  // ⚠️ 여기서는 setContent 를 쓰지 않고 **진짜 http 화면**을 열어 내용만 바꿉니다.
+  // setContent 로 만든 about:blank 화면에서는 Camoufox 의 마우스가 클릭을 끝내지 못합니다
+  // (2026-08-01 실측: force 를 줘도 시간초과). 네이버는 진짜 http 화면이라 문제가 안 됩니다.
+  await page.goto('https://example.com/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await page.evaluate(() => {
+    document.body.innerHTML =
+      '<button id="open">팝업 열기</button>' +
+      '<div id="pop" style="display:none">저장되었습니다</div>' +
+      '<button class="btn">지우기</button><button class="btn">지우기</button>';
+    document.getElementById('open')!.onclick = () => {
+      document.getElementById('pop')!.style.display = 'block';
+    };
+  });
+
+  // ① 눌렀더니 기대한 글자가 떴다 → 성공
+  const good = await act(page, { do: 'click', text: '팝업 열기', expect: { appears: '저장되었습니다' } });
+  assert.equal(good.ok, true, `되어야 하는데 실패했습니다: ${good.이유}`);
+
+  // ② 같은 선택자에 두 개가 걸림 → 찍지 말고 멈춰야 합니다
+  const many = await act(page, { do: 'click', selectors: ['.btn'] });
+  assert.equal(many.ok, false, '두 개가 걸렸는데 하나를 골라서 눌렀습니다');
+  assert.equal(many.단계, '찾기');
+  assert.ok(many.이유?.includes('2개'), `겹친 개수를 안 알려줍니다: ${many.이유}`);
+
+  // ③ 눌리긴 했는데 기대한 결과가 아님 → 성공이라고 하면 안 됩니다
+  const wrong = await act(page, {
+    do: 'click',
+    text: '팝업 열기',
+    expect: { appears: '없는글자입니다', timeoutMs: 1500 },
+  });
+  assert.equal(wrong.ok, false, '결과가 다른데 성공이라고 했습니다');
+  assert.equal(wrong.단계, '확인');
+  console.log(`하고·확인 OK: 겹치면 멈춤(${many.이유?.slice(0, 24)}…) · 결과 다르면 실패(${wrong.실제})`);
 
   // ③ JSON 수집기 (요구 6)
   // 실제 관리자 화면처럼, 페이지 안에서 fetch 를 불러 뒤에서 오가는 JSON 을 잡습니다.

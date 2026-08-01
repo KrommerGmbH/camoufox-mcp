@@ -90,7 +90,15 @@ export async function openBrowser(opts: OpenOptions = {}): Promise<{
   context = (await Camoufox({
     user_data_dir: profileDir,
     headless,
-    humanize: true, // 사람처럼 곡선을 그리는 마우스 (Camoufox 내장, 커서 전용)
+    // 사람처럼 곡선을 그리는 마우스 (Camoufox 내장, 커서 전용).
+    //
+    // **숫자로 상한을 줘야 합니다.** `true` 는 상한이 없어서, 2560px 짜리 넓은 창에서는
+    // 마우스가 화면을 한 번 가로지르는 데 **57초**가 걸렸습니다(2026-08-01 실측).
+    // 그러면 Playwright 의 클릭이 시간초과로 죽고, 좌표로 찍는 마지막 수단으로 떨어집니다.
+    // 좌표 클릭은 스크롤이 어긋나면 빗나가는데, **빗나가도 "눌렀다"고 답합니다.**
+    // 오늘 연령 체크박스가 안 눌린 진짜 원인이 이것이었습니다.
+    // 0.7초면 사람이 마우스를 휙 옮기는 속도와 비슷하고, 곡선도 그대로 그립니다.
+    humanize: 0.7,
     os: 'windows',
     block_images: opts.blockImages ?? false,
     enable_cache: true,
@@ -131,6 +139,20 @@ export async function openBrowser(opts: OpenOptions = {}): Promise<{
   page = context.pages()[0] ?? (await context.newPage());
   openedAt = Date.now();
   currentProfile = profileDir;
+
+  // 마우스 예열. **빼면 안 됩니다.**
+  //
+  // 실측(2026-08-01): 창을 연 뒤 **맨 처음 마우스를 쓰는 한 번**이 20~57초 걸립니다.
+  // 그동안 Playwright 의 클릭은 시간초과로 죽고, 좌표로 찍는 마지막 수단으로 떨어집니다.
+  // 좌표 클릭은 빗나가도 "눌렀다"고 답하기 때문에, 고치지도 않고 고쳤다고 보고하게 됩니다.
+  // 여기서 미리 한 번 눌러 그 비용을 치르면 이후 클릭은 1초 남짓으로 안정됩니다(5번 연속 성공).
+  {
+    const t0 = Date.now();
+    await page.mouse.move(300, 300).catch(() => {});
+    await page.mouse.down().catch(() => {});
+    await page.mouse.up().catch(() => {});
+    process.stderr.write(`[mouse] 예열 ${((Date.now() - t0) / 1000).toFixed(1)}초 (첫 클릭이 죽는 것을 막습니다)\n`);
+  }
 
   return { page, context, recorder, reused: false, restoredCookies: sess.restored };
 }
