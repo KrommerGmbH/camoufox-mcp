@@ -22,16 +22,34 @@ export interface SnapResult {
   elements: SnapElement[];
   tables: { caption?: string; headers: string[]; sampleRow: string[] }[];
   truncated: boolean;
+  /** 거르기 전에 화면에 몇 개 있었는지. "덜 받았다"는 것을 알 수 있게 합니다. */
+  totalOnScreen?: number;
+}
+
+export interface SnapOptions {
+  /** 최대 개수 */
+  limit?: number;
+  /**
+   * 이 글자가 든 요소만. **브라우저 안에서 거릅니다** — 안 걸린 것은 아예 안 보냅니다.
+   * 이것 하나로 응답이 150KB → 2KB 가 됩니다.
+   */
+  find?: string;
+  /** 종류로 거르기: click(누를 것) · input(값 넣을 것) · all */
+  only?: 'click' | 'input' | 'all';
+  /** 참이면 선택자를 전부 담습니다. 기본은 위에서 2개만(나머지는 길기만 하고 잘 깨집니다). */
+  verbose?: boolean;
 }
 
 /**
- * 화면에서 사람이 만질 수 있는 요소를 전부 뽑습니다.
+ * 화면에서 사람이 만질 수 있는 요소를 뽑습니다.
  * 각 요소에 data-cfx-ref 를 찍어두므로, 이후 click/type 이 ref 로 정확히 그 요소를 집습니다.
- * (좌표 클릭을 절대 쓰지 않기 위한 장치입니다.)
+ *
+ * ⚠️ **거르기(`find`·`only`)는 브라우저 안에서 합니다.**
+ * 400개를 다 받아서 1개를 고르는 것은 절약이 아닙니다. 기계가 걸러서 1개만 보내는 것이 절약입니다.
  */
-export async function snapshot(target: Target, limit = 400, prefix = 'e'): Promise<SnapResult> {
+export async function snapshot(target: Target, opts: SnapOptions = {}, prefix = 'e'): Promise<SnapResult> {
   return target.evaluate(
-    ({ max, pfx }) => {
+    ({ max, pfx, find, only, verbose }) => {
       const CAP = 'data-cfx-ref';
       document.querySelectorAll(`[${CAP}]`).forEach((el) => el.removeAttribute(CAP));
 
@@ -99,17 +117,54 @@ export async function snapshot(target: Target, limit = 400, prefix = 'e'): Promi
       const elements: SnapElement[] = [];
       let n = 0;
       let truncated = false;
+      let totalOnScreen = 0;
+
+      const needle = (find ?? '').trim().toLowerCase();
+      const CLICKABLE = new Set(['a', 'button']);
+      const INPUTS = new Set(['input', 'select', 'textarea']);
 
       for (const el of Array.from(document.querySelectorAll(SEL))) {
+        const box = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        const tagLower = el.tagName.toLowerCase();
+
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+
+        // 크기가 0 이라고 무조건 버리면 안 됩니다.
+        //
+        // 실측(2026-07-31, 네이버 상품속성 "연령"): 진짜 체크박스는 크기 0 으로 숨겨 두고
+        // 그 위에 예쁜 네모를 그려 놓습니다. 예전 규칙으로는 이 체크박스가 **목록에서 통째로 사라져서**
+        // AI 가 누를 방법이 없었습니다. 그래서 **감싼 라벨이 보이면 살려 둡니다.**
+        if (box.width === 0 || box.height === 0) {
+          const lab = el.closest('label');
+          const labBox = lab?.getBoundingClientRect();
+          if (!labBox || labBox.width === 0 || labBox.height === 0) continue;
+        }
+
+        totalOnScreen++;
+
+        // ── 여기서 거릅니다. 걸린 것만 밖으로 나갑니다 ──
+        if (only === 'click' && !CLICKABLE.has(tagLower) && el.getAttribute('role') !== 'button') continue;
+        if (only === 'input' && !INPUTS.has(tagLower)) continue;
+        if (needle) {
+          const hay = [
+            el.getAttribute('aria-label'),
+            el.getAttribute('placeholder'),
+            el.getAttribute('name'),
+            el.getAttribute('id'),
+            el.getAttribute('value'),
+            (el as HTMLElement).innerText,
+            el.closest('label')?.textContent,
+          ]
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(needle)) continue;
+        }
+
         if (n >= max) {
           truncated = true;
           break;
         }
-        const box = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-        // 눈에 안 보이는 것은 기록하지 않습니다(숨은 요소까지 담으면 쓸모없이 커집니다).
-        if (box.width === 0 || box.height === 0) continue;
-        if (style.visibility === 'hidden' || style.display === 'none') continue;
 
         const ref = `${pfx}${++n}`;
         el.setAttribute(CAP, ref);
@@ -135,7 +190,12 @@ export async function snapshot(target: Target, limit = 400, prefix = 'e'): Promi
         }
         selectors.push({ strategy: 'css', expression: cssPath(el) });
 
-        const item: SnapElement = { ref, tag, name: name || undefined, selectors };
+        // 선택자를 다 보내지 않습니다.
+        // 위쪽 두 개가 제일 안 깨지고, 맨 아래 cssPath 는 길기만 하고 배포 때마다 깨집니다.
+        // 요소 400개 × 선택자 6개를 보내면 그것만으로 100KB 가 넘습니다.
+        const keep = verbose ? selectors : selectors.slice(0, 2);
+
+        const item: SnapElement = { ref, tag, name: name || undefined, selectors: keep };
         if (role) item.role = role;
         if (placeholder) item.placeholder = placeholder;
         const t = el.getAttribute('type');
@@ -170,9 +230,15 @@ export async function snapshot(target: Target, limit = 400, prefix = 'e'): Promi
         }))
         .filter((t) => t.headers.length > 0);
 
-      return { url: location.href, title: document.title, elements, tables, truncated };
+      return { url: location.href, title: document.title, elements, tables, truncated, totalOnScreen };
     },
-    { max: limit, pfx: prefix },
+    {
+      max: opts.limit ?? 400,
+      pfx: prefix,
+      find: opts.find ?? '',
+      only: opts.only ?? 'all',
+      verbose: opts.verbose ?? false,
+    },
   );
 }
 

@@ -7,8 +7,9 @@ import { outDir, writeDump } from './dump.js';
 import { extractFromHtml } from './extract.js';
 import { assertWebUrl } from './guard.js';
 import { closeLayerPopups } from './popup.js';
-import { contentTarget, snapshotBoth, targetForRef } from './frame.js';
-import { byRef, snapshot } from './snapshot.js';
+import { contentTarget, snapshotBoth } from './frame.js';
+import { locate } from './locate.js';
+import { snapshot } from './snapshot.js';
 
 const server = new McpServer({ name: 'camoufox-mcp', version: '0.1.0' });
 
@@ -148,14 +149,20 @@ server.registerTool(
   {
     title: '화면 요소 뽑기',
     description:
-      '지금 화면에서 사람이 만질 수 있는 요소를 전부 뽑습니다. 각 요소에 ref(e1, e2...)가 붙고, ' +
-      'click·type 은 이 ref 로 요소를 집습니다. 좌표는 절대 쓰지 않습니다. ' +
-      '선택 상자의 선택지와 표의 머리글도 같이 담습니다.',
-    inputSchema: { limit: z.number().optional().describe('최대 개수(기본 400)') },
+      '화면 요소를 뽑습니다. **find 로 걸러서 부르세요** — 안 거르면 400개가 통째로 와서 응답이 150KB 가 됩니다. ' +
+      '거르기는 브라우저 안에서 하므로 걸린 것만 옵니다. ' +
+      '누를 것을 이미 아는 경우에는 이걸 부르지 말고 browser_click({text}) 을 바로 쓰세요.',
+    inputSchema: {
+      find: z.string().optional().describe('이 글자가 든 것만 (예: "저장"). 제일 먼저 이걸 쓰세요.'),
+      only: z.enum(['click', 'input', 'all']).optional().describe('click=누를 것 · input=값 넣을 것'),
+      limit: z.number().optional().describe('최대 개수(기본 400, find 를 주면 20 이면 충분)'),
+      verbose: z.boolean().optional().describe('선택자를 전부 담기(기본은 위에서 2개만)'),
+    },
   },
-  async ({ limit }) => {
+  async ({ find, only, limit, verbose }) => {
     const { page } = current();
-    return text(await snapshotBoth(page, limit ?? 400, snapshot));
+    const r = await snapshotBoth(page, { limit: limit ?? (find ? 20 : 400), find, only, verbose }, snapshot);
+    return text(r);
   },
 );
 
@@ -190,33 +197,57 @@ server.registerTool(
   'browser_click',
   {
     title: '클릭',
-    description: 'ref 로 집은 요소를 사람처럼(곡선 마우스) 클릭합니다.',
+    description:
+      '사람처럼(곡선 마우스) 클릭합니다. **글자만 주면 됩니다** — snapshot 을 먼저 부를 필요가 없습니다. ' +
+      '예: {text:"저장하기"}. 같은 글자가 여럿이면 nth 로 고릅니다. ' +
+      'iframe 안쪽도 같이 찾습니다.',
     inputSchema: {
-      ref: z.string().describe('snapshot 이 준 ref (예: e12)'),
+      text: z.string().optional().describe('버튼·링크·칸의 글자 (제일 흔한 길)'),
+      ref: z.string().optional().describe('snapshot 이 준 ref (예: e12)'),
+      selector: z.string().optional().describe('CSS 선택자를 직접 줄 때'),
+      nth: z.number().optional().describe('같은 것이 여럿일 때 몇 번째 (0부터)'),
       timeoutMs: z.number().optional(),
     },
   },
-  async ({ ref, timeoutMs }) => {
+  async ({ text: q, ref, selector, nth, timeoutMs }) => {
     const { page } = current();
-    const el = byRef(await targetForRef(page, ref), ref);
-    let how = '보통';
+    const found = await locate(page, { ref, text: q, selector, nth });
+    const el = found.locator;
+    let how = found.how;
+    // 체크박스는 누르기 전 상태를 기억해 둡니다. 눌렀는데 안 바뀌면 **실패로 알려야** 하기 때문입니다.
+    // 실측(2026-07-31): 좌표 클릭이 "눌렀다"고 답했지만 실제로는 하나도 안 바뀌었습니다.
+    // 그대로 저장했으면 "고쳤다"고 잘못 보고할 뻔했습니다.
+    const before = await el.isChecked().catch(() => null);
+
     try {
       await el.click({ timeout: timeoutMs ?? 15_000 });
     } catch (e) {
       // 화면을 계속 다시 그리는 사이트에서는 "요소가 멈출 때까지" 기다림이 안 끝납니다.
-      // 이때만 기다림을 건너뜁니다. 단, 건너뛰면 "화면 안으로 스크롤"도 같이 건너뛰므로
-      // 화면 밖 요소는 엉뚱한 자리가 눌립니다. 그래서 먼저 끌어온 뒤에 누릅니다.
+      // 먼저 화면 안으로 끌어온 뒤, **요소를 집은 채로** 안전장치만 끕니다(force).
+      // 좌표 클릭보다 훨씬 안전합니다 — 스크롤이 어긋나도 엉뚱한 곳을 누르지 않습니다.
       await el.scrollIntoViewIfNeeded({ timeout: 5_000 }).catch(() => {});
-      const box = await el.boundingBox().catch(() => null);
-      if (!box) throw e;
-      // 요소를 집는 대신 좌표로 진짜 마우스를 움직여 누릅니다.
-      // 안전장치를 안 거치므로 화면이 계속 바뀌는 곳에서도 걸리지 않습니다.
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-      how = '좌표 클릭(스크롤 후)';
+      try {
+        await el.click({ force: true, timeout: 5_000 });
+        how += ' + force';
+      } catch {
+        const box = await el.boundingBox().catch(() => null);
+        if (!box) throw e;
+        // 마지막 수단. 스크롤이 움직이면 빗나갈 수 있으므로 아래에서 반드시 확인합니다.
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        how += ' + 좌표(빗나갈 수 있음)';
+      }
     }
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    return text({ clicked: ref, how, url: page.url() });
+
+    const after = before === null ? null : await el.isChecked().catch(() => null);
+    const out: Record<string, unknown> = { clicked: q ?? ref ?? selector, how, url: page.url() };
+    if (before !== null) {
+      out.checked = after;
+      // 눌렀는데 그대로면 조용히 넘기지 않습니다. 부르는 쪽이 알아야 합니다.
+      if (before === after) out.경고 = '눌렀지만 체크 상태가 그대로입니다. 라벨을 눌러야 하는 칸일 수 있습니다.';
+    }
+    return text(out);
   },
 );
 
@@ -225,19 +256,24 @@ server.registerTool(
   {
     title: '입력',
     description:
-      'ref 로 집은 칸을 클릭하고 사람처럼 한 글자씩 칩니다. ' +
+      '칸을 클릭하고 사람처럼 한 글자씩 칩니다. **칸 이름·placeholder 글자만 주면 됩니다** — snapshot 불필요. ' +
+      '예: {text:"상품명 검색", value:"브리오"}. ' +
       'Camoufox 는 마우스만 사람처럼 움직이므로 타이핑 간격은 여기서 줍니다.',
     inputSchema: {
-      ref: z.string(),
+      text: z.string().optional().describe('칸의 이름표나 placeholder 글자'),
+      ref: z.string().optional().describe('snapshot 이 준 ref'),
+      selector: z.string().optional().describe('CSS 선택자를 직접 줄 때'),
+      nth: z.number().optional(),
       value: z.string(),
       delayMs: z.number().optional().describe('글자 사이 간격(기본 60~140 무작위)'),
       clear: z.boolean().optional().describe('기존 값을 지우고 입력(기본 true)'),
       submit: z.boolean().optional().describe('입력 후 Enter'),
     },
   },
-  async ({ ref, value, delayMs, clear, submit }) => {
+  async ({ text: q, ref, selector, nth, value, delayMs, clear, submit }) => {
     const { page } = current();
-    const el = byRef(await targetForRef(page, ref), ref);
+    const found = await locate(page, { ref, text: q, selector, nth });
+    const el = found.locator;
     await el.click();
     if (clear !== false) await el.fill('');
     // 사람은 일정한 속도로 치지 않습니다. 그래서 글자마다 간격을 조금씩 흔듭니다.
@@ -246,7 +282,7 @@ server.registerTool(
     }
     if (submit) await el.press('Enter');
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    return text({ typed: ref, submitted: !!submit, url: page.url() });
+    return text({ typed: q ?? ref ?? selector, how: found.how, submitted: !!submit, url: page.url() });
   },
 );
 
@@ -290,7 +326,7 @@ server.registerTool(
     // 두 가지 방식을 함께 씁니다. 서로 못 보는 걸 채워줍니다.
     //  - snapshot: 브라우저 안에서 잼 → 지금 보이는지, 클릭되는지 (ref 로 집을 수 있음)
     //  - extract  : 다 그려진 HTML 을 cheerio 로 훑음 → 글 내용, select 선택지, 표 머리글
-    const snap = await snapshotBoth(page, limit ?? 1500, snapshot);
+    const snap = await snapshotBoth(page, { limit: limit ?? 1500, verbose: true }, snapshot);
     const extracted = extractFromHtml(await (await contentTarget(page)).target.content(), page.url());
     const all = recorder.all();
     const net = netFilter ? all.filter((e) => e.url.includes(netFilter)) : all;

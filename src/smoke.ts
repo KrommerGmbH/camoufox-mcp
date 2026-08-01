@@ -43,7 +43,7 @@ async function main() {
   // ① 요소 뽑기
   await page.goto(DOM_TARGET, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
-  const snap = await snapshot(page);
+  const snap = await snapshot(page, {});
   console.log(`요소 ${snap.elements.length}개 / 표 ${snap.tables.length}개 / 제목 "${snap.title}"`);
   assert.ok(snap.elements.length > 0, '요소를 하나도 못 뽑았습니다');
   assert.ok(
@@ -56,6 +56,29 @@ async function main() {
   const found = await page.locator(`[data-cfx-ref="${first.ref}"]`).count();
   assert.equal(found, 1, `ref ${first.ref} 로 요소를 못 집었습니다`);
   console.log(`ref 로 집기 OK (${first.ref} = ${first.tag} "${first.name ?? ''}")`);
+
+  // ②-b 거르기와 "숨은 체크박스" (2026-07-31 에 실제로 데인 것)
+  //
+  // 네이버 상품속성의 "연령" 체크박스는 **크기가 0** 이고 그 위에 예쁜 네모가 그려져 있었습니다.
+  // 예전 규칙(크기 0 이면 버림)으로는 목록에서 통째로 사라져서 누를 방법이 없었습니다.
+  // 아래가 그 상황을 그대로 흉내 낸 것입니다.
+  await page.setContent(`
+    <label><input type="checkbox" name="age3" style="width:0;height:0;opacity:0"> 3세</label>
+    <label><input type="checkbox" name="age4" style="width:0;height:0;opacity:0"> 4세</label>
+    <button>저장하기</button><button>취소</button>
+  `);
+  const hidden = await snapshot(page, {});
+  assert.ok(
+    hidden.elements.some((e) => e.tag === 'input'),
+    '라벨이 보이는 숨은 체크박스를 놓쳤습니다(오늘 실패한 그 버그)',
+  );
+
+  const onlySave = await snapshot(page, { find: '저장' });
+  assert.equal(onlySave.elements.length, 1, `find 로 걸렀는데 ${onlySave.elements.length}개가 왔습니다`);
+  assert.ok((onlySave.totalOnScreen ?? 0) > 1, '거르기 전 개수를 안 알려줍니다');
+  console.log(
+    `거르기 OK: 화면 ${onlySave.totalOnScreen}개 중 "저장" 1개만 받음 · 숨은 체크박스도 잡힘`,
+  );
 
   // ③ JSON 수집기 (요구 6)
   // 실제 관리자 화면처럼, 페이지 안에서 fetch 를 불러 뒤에서 오가는 JSON 을 잡습니다.

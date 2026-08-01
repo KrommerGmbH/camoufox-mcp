@@ -1,5 +1,5 @@
 import type { Frame, Page } from 'playwright-core';
-import type { SnapResult } from './snapshot.js';
+import type { SnapOptions, SnapResult } from './snapshot.js';
 
 /**
  * 진짜 내용이 들어 있는 곳을 찾습니다.
@@ -67,15 +67,15 @@ export async function contentTarget(page: Page): Promise<FrameInfo> {
  */
 export async function snapshotBoth(
   page: Page,
-  limit: number,
-  snap: (t: Target, n: number, prefix: string) => Promise<SnapResult>,
+  opts: SnapOptions,
+  snap: (t: Target, o: SnapOptions, prefix: string) => Promise<SnapResult>,
 ): Promise<SnapResult & { inFrame: boolean; frameUrl: string | null; outerCount: number; frameCount: number }> {
-  const outer = await snap(page, limit, 'e');
+  const outer = await snap(page, opts, 'e');
   const f = await contentTarget(page);
   if (!f.inFrame) {
     return { ...outer, inFrame: false, frameUrl: null, outerCount: outer.elements.length, frameCount: 0 };
   }
-  const inner = await snap(f.target, limit, 'f');
+  const inner = await snap(f.target, opts, 'f');
   return {
     ...outer,
     elements: [...outer.elements, ...inner.elements],

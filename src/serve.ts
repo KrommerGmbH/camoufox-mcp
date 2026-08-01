@@ -127,7 +127,7 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   async snapshot(a) {
     const { page } = current();
     // 내용이 iframe 안에 있으면 그 안쪽을 봅니다(판매관리·정산관리가 그렇습니다).
-    return snapshotBoth(page, a.limit ?? 400, snapshot);
+    return snapshotBoth(page, { limit: a.limit ?? 400, find: a.find, only: a.only, verbose: a.verbose }, snapshot);
   },
 
   async netlist(a) {
@@ -197,7 +197,7 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   async dump(a) {
     const { page, recorder } = current();
     // 화면 요소는 전부 담습니다. 잘리면 나중에 다시 조사해야 합니다.
-    const snap = await snapshotBoth(page, a.limit ?? 1500, snapshot);
+    const snap = await snapshotBoth(page, { limit: a.limit ?? 1500, verbose: true }, snapshot);
     // 화면 구조 요약은 Playwright 가 직접 만들어 줍니다. 새 라이브러리가 필요 없습니다.
     const aria = await page
       .locator('body')
