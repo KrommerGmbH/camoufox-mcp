@@ -66,6 +66,8 @@ async function main() {
     <label><input type="checkbox" name="age3" style="width:0;height:0;opacity:0"> 3세</label>
     <label><input type="checkbox" name="age4" style="width:0;height:0;opacity:0"> 4세</label>
     <button>저장하기</button><button>취소</button>
+    <a href="#a">본문으로 바로가기</a><a href="#b">본문으로 바로가기</a>
+    <div class="seller-input"><input class="ng-pristine ng-untouched" placeholder="상품명"></div>
   `);
   const hidden = await snapshot(page, {});
   assert.ok(
@@ -80,11 +82,34 @@ async function main() {
     `거르기 OK: 화면 ${onlySave.totalOnScreen}개 중 "저장" 1개만 받음 · 숨은 체크박스도 잡힘`,
   );
 
+  // ②-c 1순위 선택자가 겹치면 순번(nth)을 줘야 합니다.
+  // 조사덤프 96화면에서 1순위 선택자의 9.9% 가 두 개 이상에 걸렸습니다(2026-08-01 실측).
+  // 순번이 없으면 부르는 쪽은 늘 첫 번째만 누르게 됩니다.
+  const dupLinks = hidden.elements.filter((e) => e.name === '본문으로 바로가기');
+  assert.equal(dupLinks.length, 2, '글자가 같은 링크 2개를 못 찾았습니다');
+  assert.deepEqual(
+    dupLinks.map((e) => e.nth),
+    [0, 1],
+    '글자가 같은 링크에 순번(nth)이 안 붙었습니다',
+  );
+  const solo = hidden.elements.find((e) => e.name === '저장하기');
+  assert.equal(solo?.nth, undefined, '겹치지 않는 요소에는 순번이 붙으면 안 됩니다');
+  console.log('겹침 순번 OK: 같은 글자 링크 2개에 nth 0·1 · 안 겹치는 것엔 안 붙음');
+
+  // ②-d AngularJS 상태 class 는 선택자에 넣으면 안 됩니다.
+  // 한 번 클릭하면 ng-pristine → ng-dirty 로 바뀌어서, 그 선택자로는 두 번째부터 못 집습니다.
+  const angular = hidden.elements.find((e) => e.placeholder === '상품명');
+  assert.ok(angular, 'ng- class 가 붙은 입력칸을 못 찾았습니다');
+  const dirty = hidden.elements.flatMap((e) => e.selectors).filter((s) => /\.ng-/.test(s.expression));
+  assert.equal(dirty.length, 0, `선택자에 ng- 상태 class 가 ${dirty.length}개 남았습니다: ${dirty[0]?.expression}`);
+  console.log('선택자 OK: 클릭하면 바뀌는 ng- 상태 class 가 안 들어감');
+
   // ③ JSON 수집기 (요구 6)
   // 실제 관리자 화면처럼, 페이지 안에서 fetch 를 불러 뒤에서 오가는 JSON 을 잡습니다.
+  // 캐시가 남아 있으면 304 로 와서 본문이 비어 있습니다. 매번 다른 주소로 물어 새로 받게 합니다.
   await page.evaluate(
     (u) => fetch(u).then((r) => r.json()),
-    JSON_TARGET,
+    `${JSON_TARGET}?nocache=${Date.now()}`,
   );
   await page.waitForTimeout(1500);
   const captured = recorder.all();

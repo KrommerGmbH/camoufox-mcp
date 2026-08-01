@@ -20,6 +20,12 @@ export interface Found {
   how: string;
   /** 바깥 문서인지 iframe 안쪽인지 */
   inFrame: boolean;
+  /**
+   * 같은 조건에 **눈에 보이는 요소가 몇 개** 걸렸는지.
+   * 2 이상이면 그중 nth 번째(기본 0번째)를 눌렀다는 뜻입니다. 엉뚱한 것을 눌렀을 수 있으니
+   * 부른 쪽에서 사람에게 알려야 합니다.
+   */
+  matches: number;
 }
 
 /** 찾는 순서. 위에 있을수록 뜻이 분명해서 잘 안 깨집니다. */
@@ -39,17 +45,21 @@ const WAYS: Way[] = [
   { how: 'text', make: (t, q) => t.getByText(q, { exact: false }) },
 ];
 
-/** 눈에 보이는 것 중 nth 번째를 돌려줍니다. 안 보이는 것은 세지 않습니다. */
-async function pickVisible(loc: Locator, nth: number): Promise<Locator | null> {
+/**
+ * 눈에 보이는 것 중 nth 번째를 돌려주고, **몇 개가 걸렸는지도 같이** 돌려줍니다.
+ * 안 보이는 것은 세지 않습니다.
+ *
+ * 개수를 같이 주는 이유: 같은 글자를 가진 버튼이 두 개인 화면에서 그냥 첫 번째를 눌러 버리면
+ * 엉뚱한 것을 눌러 놓고도 "눌렀다"고 답하게 됩니다. 개수를 알려야 사람이 알아챌 수 있습니다.
+ */
+async function pickVisible(loc: Locator, nth: number): Promise<{ one: Locator; visible: number } | null> {
   const total = await loc.count().catch(() => 0);
-  let seen = 0;
+  const seen: Locator[] = [];
   for (let i = 0; i < Math.min(total, 40); i++) {
     const one = loc.nth(i);
-    if (!(await one.isVisible().catch(() => false))) continue;
-    if (seen === nth) return one;
-    seen++;
+    if (await one.isVisible().catch(() => false)) seen.push(one);
   }
-  return null;
+  return seen[nth] ? { one: seen[nth], visible: seen.length } : null;
 }
 
 export interface LocateQuery {
@@ -77,14 +87,21 @@ export async function locate(page: Page, q: LocateQuery): Promise<Found> {
   // ① ref — 예전 방식. 스냅샷을 이미 받았을 때 제일 정확합니다.
   if (q.ref) {
     const t = q.ref.startsWith('f') && frame.inFrame ? frame.target : page;
-    return { locator: t.locator(`[data-cfx-ref="${q.ref}"]`), how: `ref=${q.ref}`, inFrame: q.ref.startsWith('f') };
+    return {
+      locator: t.locator(`[data-cfx-ref="${q.ref}"]`),
+      how: `ref=${q.ref}`,
+      inFrame: q.ref.startsWith('f'),
+      matches: 1, // ref 는 요소 하나에만 찍혀 있어서 겹칠 수가 없습니다.
+    };
   }
 
   // ② selector — 사람이 정확히 아는 경우.
   if (q.selector) {
     for (const { t, inFrame } of targets) {
-      const one = await pickVisible(t.locator(q.selector), nth);
-      if (one) return { locator: one, how: `selector${inFrame ? '(iframe)' : ''}`, inFrame };
+      const hit = await pickVisible(t.locator(q.selector), nth);
+      if (hit) {
+        return { locator: hit.one, how: `selector${inFrame ? '(iframe)' : ''}`, inFrame, matches: hit.visible };
+      }
     }
     throw new Error(`선택자로 못 찾았습니다: ${q.selector}`);
   }
@@ -93,8 +110,10 @@ export async function locate(page: Page, q: LocateQuery): Promise<Found> {
   if (q.text) {
     for (const way of WAYS) {
       for (const { t, inFrame } of targets) {
-        const one = await pickVisible(way.make(t, q.text), nth).catch(() => null);
-        if (one) return { locator: one, how: `${way.how}${inFrame ? '(iframe)' : ''}`, inFrame };
+        const hit = await pickVisible(way.make(t, q.text), nth).catch(() => null);
+        if (hit) {
+          return { locator: hit.one, how: `${way.how}${inFrame ? '(iframe)' : ''}`, inFrame, matches: hit.visible };
+        }
       }
     }
     throw new Error(

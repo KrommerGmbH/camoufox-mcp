@@ -12,6 +12,12 @@ export interface SnapElement {
   text?: string;
   /** 이 요소를 가리키는 방법들. 위에 있을수록 잘 안 깨집니다. */
   selectors: { strategy: string; expression: string }[];
+  /**
+   * 1순위 선택자가 이 화면의 **다른 요소와 겹칠 때만** 붙습니다. 겹친 것들 중 몇 번째인가(0부터).
+   * 예: "메인 메뉴로 바로가기" 라는 링크가 세 개면 각각 nth 0·1·2 를 받습니다.
+   * 누를 때 `browser_click({ selector, nth })` 로 그대로 넘기면 엉뚱한 것을 안 누릅니다.
+   */
+  nth?: number;
   /** select 의 선택지 전부. 나중에 다시 조사하지 않으려고 지금 다 담습니다. */
   options?: { value: string; text: string }[];
 }
@@ -30,8 +36,9 @@ export interface SnapOptions {
   /** 최대 개수 */
   limit?: number;
   /**
-   * 이 글자가 든 요소만. **브라우저 안에서 거릅니다** — 안 걸린 것은 아예 안 보냅니다.
-   * 이것 하나로 응답이 150KB → 2KB 가 됩니다.
+   * 여기에 적은 글자가 든 요소만 받습니다.
+   * 요소의 이름·안내글자·id·눈에 보이는 글자 중 하나에 이 글자가 들어 있으면 남기고, 없으면 버립니다.
+   * 고르는 일을 브라우저 안에서 하므로 버린 요소는 AI 에게 아예 오지 않습니다(150KB → 2KB).
    */
   find?: string;
   /** 종류로 거르기: click(누를 것) · input(값 넣을 것) · all */
@@ -44,8 +51,11 @@ export interface SnapOptions {
  * 화면에서 사람이 만질 수 있는 요소를 뽑습니다.
  * 각 요소에 data-cfx-ref 를 찍어두므로, 이후 click/type 이 ref 로 정확히 그 요소를 집습니다.
  *
- * ⚠️ **거르기(`find`·`only`)는 브라우저 안에서 합니다.**
- * 400개를 다 받아서 1개를 고르는 것은 절약이 아닙니다. 기계가 걸러서 1개만 보내는 것이 절약입니다.
+ * ⚠️ **고르는 일(`find`·`only`)은 브라우저 안에서 끝냅니다.**
+ * 네이버 상품수정 화면 한 장에는 버튼·입력칸 같은 만질 수 있는 요소가 400개쯤 있습니다.
+ * 그 400개를 전부 AI 에게 보내 놓고 AI 가 "저장하기" 하나를 고르면, 나머지 399개 값도 이미 토큰을 다 씁니다.
+ * 그래서 브라우저 안에서 요소 400개의 글자를 하나씩 보고 "저장" 이 안 든 399개를 버린 뒤,
+ * 남은 1개만 AI 에게 보냅니다.
  */
 export async function snapshot(target: Target, opts: SnapOptions = {}, prefix = 'e'): Promise<SnapResult> {
   return target.evaluate(
@@ -79,9 +89,17 @@ export async function snapshot(target: Target, opts: SnapOptions = {}, prefix = 
         return cut((el as HTMLElement).innerText || el.textContent);
       };
 
-      // 배포마다 바뀌는 자동생성 class 인지 대충 판별합니다 (예: css-1tk4pl9, sc-a1b2c3).
+      // 선택자에 쓰면 안 되는 class 인지 판별합니다.
+      //
+      // ① 배포마다 바뀌는 자동생성 이름 (예: css-1tk4pl9, sc-a1b2c3)
+      // ② AngularJS 가 **지금 상태**를 적어 두는 이름 (ng-pristine · ng-dirty · ng-valid …)
+      //    네이버 판매자센터는 AngularJS 로 만들어져 있습니다. 손대기 전에는 ng-pristine 이지만
+      //    한 번 클릭하면 ng-dirty 로 바뀝니다. 이 이름이 든 선택자는 **누른 뒤에 못 씁니다.**
+      //    실측(2026-08-01, 조사덤프): 선택자 33,892개 중 1,003개(3.0%)가 이 이름을 물고 있었습니다.
       const generated = (token: string) =>
-        /^(css|sc|jsx|emotion|_)[-_]?[0-9a-z]{4,}$/i.test(token) || /^[a-z]{1,3}[0-9]{4,}$/i.test(token);
+        /^(css|sc|jsx|emotion|_)[-_]?[0-9a-z]{4,}$/i.test(token) ||
+        /^[a-z]{1,3}[0-9]{4,}$/i.test(token) ||
+        /^ng-/.test(token);
 
       const stableClasses = (el: Element) =>
         Array.from(el.classList).filter((c) => !generated(c)).slice(0, 2);
@@ -143,7 +161,7 @@ export async function snapshot(target: Target, opts: SnapOptions = {}, prefix = 
 
         totalOnScreen++;
 
-        // ── 여기서 거릅니다. 걸린 것만 밖으로 나갑니다 ──
+        // ── 여기서 고릅니다. 조건에 맞는 요소만 AI 에게 나갑니다 ──
         if (only === 'click' && !CLICKABLE.has(tagLower) && el.getAttribute('role') !== 'button') continue;
         if (only === 'input' && !INPUTS.has(tagLower)) continue;
         if (needle) {
@@ -214,6 +232,25 @@ export async function snapshot(target: Target, opts: SnapOptions = {}, prefix = 
         }
 
         elements.push(item);
+      }
+
+      // 1순위 선택자가 겹치는 요소에 순번을 붙입니다.
+      //
+      // 실측(2026-08-01, 조사덤프 96화면): 1순위 선택자 12,371개 중 **1,221개(9.9%)가 두 개 이상**에
+      // 걸렸습니다. 네이버 화면에는 id 도 name 도 없이 글자만 같은 링크·버튼이 흔합니다
+      // (예: "메인 메뉴로 바로가기" 링크 3개). 순번을 안 주면 부른 쪽은 늘 첫 번째만 누르게 되고,
+      // 엉뚱한 것을 눌러 놓고도 "눌렀다"고 답하게 됩니다.
+      const sameSel = new Map<string, SnapElement[]>();
+      for (const it of elements) {
+        const s = it.selectors[0];
+        if (!s) continue;
+        const key = `${s.strategy}|${s.expression}`;
+        const list = sameSel.get(key);
+        if (list) list.push(it);
+        else sameSel.set(key, [it]);
+      }
+      for (const list of sameSel.values()) {
+        if (list.length > 1) list.forEach((it, i) => (it.nth = i));
       }
 
       // 표는 머리글과 첫 줄만 봅니다. 어떤 데이터가 있는 화면인지 알기에는 충분합니다.

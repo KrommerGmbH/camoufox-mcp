@@ -242,6 +242,11 @@ server.registerTool(
 
     const after = before === null ? null : await el.isChecked().catch(() => null);
     const out: Record<string, unknown> = { clicked: q ?? ref ?? selector, how, url: page.url() };
+    // 같은 조건에 여러 개가 걸렸으면 그중 하나를 고른 것입니다. 조용히 넘기면 엉뚱한 것을 눌러 놓고
+    // "눌렀다"고 답하게 됩니다.
+    if (found.matches > 1) {
+      out.겹침 = `같은 조건에 ${found.matches}개가 걸려서 ${nth ?? 0}번째를 눌렀습니다. 다른 것이면 nth 를 바꾸세요.`;
+    }
     if (before !== null) {
       out.checked = after;
       // 눌렀는데 그대로면 조용히 넘기지 않습니다. 부르는 쪽이 알아야 합니다.
@@ -282,7 +287,16 @@ server.registerTool(
     }
     if (submit) await el.press('Enter');
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    return text({ typed: q ?? ref ?? selector, how: found.how, submitted: !!submit, url: page.url() });
+    const out: Record<string, unknown> = {
+      typed: q ?? ref ?? selector,
+      how: found.how,
+      submitted: !!submit,
+      url: page.url(),
+    };
+    if (found.matches > 1) {
+      out.겹침 = `같은 조건에 ${found.matches}개가 걸려서 ${nth ?? 0}번째 칸에 넣었습니다. 다른 칸이면 nth 를 바꾸세요.`;
+    }
+    return text(out);
   },
 );
 
