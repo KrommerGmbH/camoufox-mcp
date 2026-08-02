@@ -11,6 +11,7 @@ import { assertWebUrl } from './guard.js';
 import { closeLayerPopups } from './popup.js';
 import { contentTarget, snapshotBoth } from './frame.js';
 import { locate } from './locate.js';
+import { login } from './login.js';
 import { snapshot } from './snapshot.js';
 import { submit } from './submit.js';
 
@@ -286,6 +287,25 @@ server.registerTool(
   async (plan) => {
     const { page } = current();
     return text(await act(page, plan));
+  },
+);
+
+server.registerTool(
+  'browser_login',
+  {
+    title: '마켓에 로그인',
+    description:
+      '마켓(네이버 등)에 로그인합니다. **비밀번호를 주지 마세요 — 줄 수도 없습니다.** ' +
+      '샵웨어 서버가 잠가 둔 비밀번호를 풀어서 이 서버로만 보내고, 여기서 바로 화면에 칩니다. ' +
+      'AI 에게는 됐다/안 됐다와 이유만 옵니다.\n' +
+      '이미 로그인되어 있으면 아무것도 안 하고 바로 끝냅니다. 성공하면 쿠키를 서버에 잠가서 저장합니다.',
+    inputSchema: {
+      market: z.string().describe('마켓 코드 (예: naver_smartstore). 도메인이나 업무분야 코드도 됩니다.'),
+    },
+  },
+  async ({ market }) => {
+    const { page, context } = current();
+    return text(await login(page, context, market));
   },
 );
 
