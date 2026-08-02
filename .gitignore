@@ -11,3 +11,6 @@ inspection/
 
 # 로그인 정보가 든 파일 — 절대 커밋 금지
 *.session.json
+
+# 1회용 스크립트 빌드 결과. 소스(scripts/*.ts)만 남깁니다.
+scripts/.build/
