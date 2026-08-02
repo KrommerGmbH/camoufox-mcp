@@ -1,4 +1,4 @@
-import type { BrowserContext, Page } from 'playwright-core';
+import type { BrowserContext, Locator, Page } from 'playwright-core';
 
 /**
  * 알림창 정리.
@@ -38,6 +38,26 @@ const CLOSE = [
 
 /** 절대 누르면 안 되는 것. 팝업 안에 있어도 이건 실제 업무를 실행합니다. */
 const NEVER = /입력하기|신청|등록|삭제|저장|동의|결제|발송|승인|제출|이동하기|구매|주문/;
+
+/**
+ * 버튼의 **이름표**를 짧게 읽습니다.
+ *
+ * 왜 이 함수가 따로 있나 (2026-08-02, "통신판매업 신고 안내" 팝업에서 실제로 데인 것):
+ * `button.close` 가 팝업 내용을 통째로 감싸고 있어서, `innerText` 로 읽으면 **공지 전문 수만 자**가
+ * 나왔습니다. 그 결과 두 가지가 한꺼번에 터졌습니다.
+ *  ① 위험 낱말 검사(NEVER)가 본문 어딘가의 "등록"·"저장"에 걸려 **멀쩡한 닫기 버튼을 못 누름**
+ *  ② 그 수만 자가 응답에 그대로 실려 **토큰을 통째로 낭비**
+ * 그래서 이름표는 **aria-label → title → 눈에 보이는 글자 앞부분** 순서로 짧게만 읽습니다.
+ */
+async function buttonLabel(el: Locator): Promise<string> {
+  const aria = (await el.getAttribute('aria-label').catch(() => null))?.trim();
+  if (aria) return aria.slice(0, 30);
+  const title = (await el.getAttribute('title').catch(() => null))?.trim();
+  if (title) return title.slice(0, 30);
+  const raw = (await el.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+  // 글자가 길면 그건 버튼 이름표가 아니라 상자를 감싼 것입니다. 첫 줄만 이름표로 봅니다.
+  return raw.slice(0, 30);
+}
 
 export interface PopupAction {
   title: string;
@@ -121,7 +141,7 @@ export async function closeLayerPopups(page: Page, opt: PopupOptions = {}): Prom
     if (await boxLoc.isVisible().catch(() => false)) {
       const closer = await firstVisible(page, `${boxSel} :is(${closeSel})`);
       if (closer) {
-        const t = (await closer.innerText().catch(() => '')).trim();
+        const t = await buttonLabel(closer);
         if (NEVER.test(t)) {
           action.how += `닫기 후보가 위험한 버튼("${t}")이라 안 눌렀습니다. `;
         } else {

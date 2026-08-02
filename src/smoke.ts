@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { act } from './act.js';
+import { apiCall, apiPatch } from './api.js';
 import { closeBrowser, openBrowser, runningBrowsers } from './browser.js';
 import { safeKey } from './dump.js';
 import { assertWebUrl } from './guard.js';
@@ -140,6 +141,60 @@ async function main() {
   assert.equal(wrong.ok, false, '결과가 다른데 성공이라고 했습니다');
   assert.equal(wrong.단계, '확인');
   console.log(`하고·확인 OK: 겹치면 멈춤(${many.이유?.slice(0, 24)}…) · 결과 다르면 실패(${wrong.실제})`);
+
+  // ②-f API 로 값 읽고 고치기 — 선택자로 칸을 고르다 엉뚱한 칸에 넣은 사고(2026-08-02)의 대책.
+  //
+  // ⚠️ 화면 안의 fetch 는 **지금 열린 화면과 같은 도메인**만 부를 수 있습니다(브라우저 규칙).
+  //    그래서 부를 API 쪽 화면을 먼저 엽니다. 실제 일에서도 같습니다 —
+  //    상품 화면(sell.smartstore.naver.com)에서 상품 API(sell.smartstore.naver.com/api/…)를 부릅니다.
+  //    (GitHub API 는 응답에 "이 문서 안에서는 아무것도 부르지 마라"는 규칙을 걸어 두어 검사에 못 씁니다.)
+  const WIKI = 'https://en.wikipedia.org';
+  await page.goto(`${WIKI}/wiki/Main_Page`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  const SITEINFO = `${WIKI}/w/api.php?action=query&format=json&meta=siteinfo`;
+
+  const readOne = await apiCall(page, { url: SITEINFO, pick: ['query.general.sitename'] });
+  assert.equal(readOne.ok, true, `API 읽기 실패: ${readOne.이유 ?? readOne.status}`);
+  assert.deepEqual(readOne.data, { 'query.general.sitename': 'Wikipedia' }, 'pick 으로 뽑은 값이 다릅니다');
+
+  // pick 을 안 주면 큰 본문은 통째로 보내지 말고 칸 이름만 알려줘야 합니다.
+  const big = `${WIKI}/w/api.php?action=query&format=json&list=allpages&aplimit=500`;
+  const readAll = await apiCall(page, { url: big });
+  assert.ok((readAll.크기 ?? 0) > 20_000, `큰 본문인데 크기를 안 알려줍니다 (${readAll.크기})`);
+  assert.ok(
+    JSON.stringify(readAll.data).includes('맨위칸이름'),
+    'pick 없이 큰 본문을 통째로 보냈습니다',
+  );
+
+  // 없는 칸을 적으면 값을 만들지 말고 멈춰야 합니다.
+  const noSuch = await apiPatch(page, {
+    getUrl: SITEINFO,
+    set: { '있을리없는.칸이름': 1 },
+    dryRun: true,
+  });
+  assert.equal(noSuch.ok, false, '없는 칸인데 그냥 넘어갔습니다');
+  assert.equal(noSuch.단계, '바꾸기');
+  assert.equal(noSuch.보냄, false, '없는 칸인데 서버로 보냈습니다');
+
+  // dryRun 은 무엇이 바뀔지만 알려주고 보내지 않아야 합니다.
+  const dry = await apiPatch(page, {
+    getUrl: SITEINFO,
+    set: { 'query.general.sitename': '바뀔이름' },
+    dryRun: true,
+  });
+  assert.equal(dry.ok, true, `dryRun 실패: ${dry.이유}`);
+  assert.equal(dry.보냄, false, 'dryRun 인데 서버로 보냈습니다');
+  assert.deepEqual(dry.바뀜, [{ 경로: 'query.general.sitename', 지금: 'Wikipedia', 바꿀값: '바뀔이름' }]);
+
+  // 다른 도메인을 부르면 이유를 분명히 알려줘야 합니다(브라우저가 막는 것).
+  const crossErr = await apiCall(page, { url: 'https://api.github.com/repos/daijro/camoufox' })
+    .then(() => '')
+    .catch((e) => String(e));
+  assert.ok(crossErr.includes('도메인이 다릅니다'), `다른 도메인 안내가 없습니다: ${crossErr.slice(0, 80)}`);
+
+  console.log(
+    `API OK: pick 으로만 받음 · 큰 본문(${Math.round((readAll.크기 ?? 0) / 1024)}KB)은 칸 이름만 · ` +
+      `없는 칸이면 멈춤 · dryRun 은 "${dry.바뀜[0].지금} → ${dry.바뀜[0].바꿀값}" 만 알려주고 안 보냄 · 다른 도메인은 이유 안내`,
+  );
 
   // ③ JSON 수집기 (요구 6)
   // 실제 관리자 화면처럼, 페이지 안에서 fetch 를 불러 뒤에서 오가는 JSON 을 잡습니다.

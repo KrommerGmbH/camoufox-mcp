@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { act } from './act.js';
+import { apiCall, apiPatch } from './api.js';
 import { closeBrowser, current, openBrowser, status } from './browser.js';
 import { importChromeCookies, importFirefoxCookies } from './cookies.js';
 import { outDir, writeDump } from './dump.js';
@@ -191,6 +192,57 @@ server.registerTool(
     const { recorder } = current();
     const e = recorder.get(ref);
     return text(e ?? { error: `ref ${ref} 를 못 찾았습니다.` });
+  },
+);
+
+server.registerTool(
+  'browser_api',
+  {
+    title: 'API 부르기 (화면 안에서)',
+    description:
+      '지금 열린 화면의 **로그인 상태 그대로** 그 사이트의 API 를 부릅니다. 화면 글자를 긁는 것보다 빠르고 안 깨집니다.\n' +
+      '⚠️ **지금 열린 화면과 같은 도메인만** 부를 수 있습니다(브라우저 규칙). 다르면 먼저 browser_navigate 하세요.\n' +
+      '**pick 에 필요한 경로만 적으세요** — 상품 하나의 JSON 이 500KB 가 넘습니다.\n' +
+      '예: {url:"https://sell.smartstore.naver.com/api/products/123", pick:["product.name","product.salePrice"]}',
+    inputSchema: {
+      url: z.string().describe('부를 주소'),
+      method: z.string().optional().describe('기본 GET'),
+      body: z.unknown().optional().describe('보낼 본문(객체면 JSON 으로 보냄)'),
+      pick: z
+        .array(z.string())
+        .optional()
+        .describe('뽑을 경로만. 예: ["product.name"]. 안 주면 20KB 넘을 때 칸 이름만 옵니다.'),
+    },
+  },
+  async ({ url, method, body, pick }) => {
+    const { page } = current();
+    assertWebUrl(url);
+    return text(await apiCall(page, { url, method, body, pick }));
+  },
+);
+
+server.registerTool(
+  'browser_api_patch',
+  {
+    title: '값 고치기 (읽고 · 한 칸만 바꾸고 · 되확인)',
+    description:
+      '**칸에 타자를 치는 대신 이것을 쓰세요.** 선택자로 칸을 고르면 엉뚱한 칸에 들어갈 수 있습니다(2026-08-02 실제 사고).\n' +
+      '하는 일: ① 지금 값을 통째로 받고 ② 적어 준 칸만 바꾸고 ③ 받은 그대로 되돌려 보내고 ④ 다시 읽어서 대조합니다.\n' +
+      '**사람 승인을 받기 전에는 반드시 dryRun:true 로 부르세요.** 무엇이 바뀔지만 알려주고 보내지 않습니다.\n' +
+      '없는 경로를 적으면 값을 만들지 않고 멈춥니다.',
+    inputSchema: {
+      getUrl: z.string().describe('지금 값을 받아올 주소'),
+      putUrl: z.string().optional().describe('되돌려 보낼 주소(기본: getUrl 과 같은 곳)'),
+      method: z.string().optional().describe('되돌려 보낼 방식(기본 PUT)'),
+      set: z.record(z.unknown()).describe('바꿀 칸. 경로 → 새 값'),
+      dryRun: z.boolean().optional().describe('참이면 보내지 않고 무엇이 바뀔지만 알려줍니다'),
+    },
+  },
+  async ({ getUrl, putUrl, method, set, dryRun }) => {
+    const { page } = current();
+    assertWebUrl(getUrl);
+    if (putUrl) assertWebUrl(putUrl);
+    return text(await apiPatch(page, { getUrl, putUrl, method, set, dryRun }));
   },
 );
 
