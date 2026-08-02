@@ -12,6 +12,7 @@ import { closeLayerPopups } from './popup.js';
 import { contentTarget, snapshotBoth } from './frame.js';
 import { locate } from './locate.js';
 import { snapshot } from './snapshot.js';
+import { submit } from './submit.js';
 
 const server = new McpServer({ name: 'camoufox-mcp', version: '0.1.0' });
 
@@ -172,12 +173,18 @@ server.registerTool(
   'browser_network_requests',
   {
     title: '화면이 부른 JSON 목록',
-    description: '창이 열린 뒤 오간 XHR/JSON 응답 목록입니다. 본문은 빼고 목록만 봅니다.',
-    inputSchema: { filter: z.string().optional().describe('URL 에 이 글자가 든 것만') },
+    description:
+      '창이 열린 뒤 오간 XHR/JSON 목록입니다. 본문은 빼고 목록만 봅니다.\n' +
+      '**onlyWrites:true 로 부르면 값을 바꾼 요청(POST·PUT·PATCH·DELETE)만** 나옵니다 — ' +
+      '"저장을 누르면 무엇이 어디로 가는가"를 볼 때 이걸 쓰세요.',
+    inputSchema: {
+      filter: z.string().optional().describe('URL 에 이 글자가 든 것만'),
+      onlyWrites: z.boolean().optional().describe('값을 바꾼 요청만 (저장·발송·삭제)'),
+    },
   },
-  async ({ filter }) => {
+  async ({ filter, onlyWrites }) => {
     const { recorder } = current();
-    return text(recorder.list(filter));
+    return text(onlyWrites ? recorder.writes(filter) : recorder.list(filter));
   },
 );
 
@@ -185,7 +192,9 @@ server.registerTool(
   'browser_network_body',
   {
     title: 'JSON 본문 보기',
-    description: 'network_list 에서 고른 ref 하나의 응답 본문 전체를 봅니다.',
+    description:
+      'network_requests 에서 고른 ref 하나를 통째로 봅니다. ' +
+      '**받은 것(body)과 보낸 것(sent)이 둘 다** 들어 있습니다.',
     inputSchema: { ref: z.number().describe('network_list 의 ref 번호') },
   },
   async ({ ref }) => {
@@ -277,6 +286,53 @@ server.registerTool(
   async (plan) => {
     const { page } = current();
     return text(await act(page, plan));
+  },
+);
+
+server.registerTool(
+  'browser_submit',
+  {
+    title: '저장 누르고 나가는 요청 가로채기',
+    description:
+      '**저장·발송처럼 값을 바꾸는 버튼은 browser_click 말고 이것을 쓰세요.**\n' +
+      '누르기 전에 먼저 가로채기를 걸어서, 나가는 요청을 잡습니다. 세 가지 방식이 있습니다.\n' +
+      '① mode:"block" — 잡아서 **버립니다. 네이버로 안 갑니다.** 눌러도 아무것도 저장되지 않습니다.\n' +
+      '   → **저장 요청이 어떻게 생겼는지 알아낼 때 이걸 씁니다.** 안전합니다. 사람이 필요 없습니다.\n' +
+      '② mode:"patch" — 잡아서 **본문의 값을 바꾼 뒤 보냅니다. 실제로 저장됩니다.**\n' +
+      '   → 화면의 입력칸을 안 찾으므로 **엉뚱한 칸에 넣는 사고가 없습니다.**\n' +
+      '③ mode:"send" — 잡아서 보고만 하고 **그대로 보냅니다. 실제로 저장됩니다.**\n' +
+      '\n' +
+      '**patch·send 는 사람이 승인한 뒤에만 부르세요** (market_approval_hold → 승인 → 여기).\n' +
+      '예: {urlPattern:"**/api/v1/products/**", mode:"block", click:{do:"click", text:"저장하기"}, saveAs:"product-save"}',
+    inputSchema: {
+      urlPattern: z
+        .string()
+        .describe('가로챌 주소 무늬(glob). 예: "**/api/v1/products/**". DB 의 cmh_ai_endpoint.urlPattern 을 그대로 쓰세요.'),
+      mode: z
+        .enum(['block', 'patch', 'send'])
+        .describe('block=버림(안 저장됨) · patch=값 바꿔 보냄(저장됨) · send=그대로 보냄(저장됨)'),
+      click: z
+        .object({
+          do: z.enum(['click', 'type']),
+          selectors: z.array(z.string()).optional(),
+          text: z.string().optional(),
+          value: z.string().optional(),
+        })
+        .describe('저장을 일으키는 누르기. browser_act 와 같은 모양입니다.'),
+      set: z
+        .record(z.unknown())
+        .optional()
+        .describe('mode:"patch" 일 때 바꿀 값. {"product.name":"새 이름"}. 본문에 없는 경로는 만들지 않고 알려줍니다.'),
+      waitMs: z.number().optional().describe('요청이 나갈 때까지 기다릴 시간(기본 15초)'),
+      saveAs: z
+        .string()
+        .optional()
+        .describe('잡은 본문을 파일로 남길 이름(영문·숫자·-·_). 본문이 500KB 여도 파일에서 찾아보면 됩니다.'),
+    },
+  },
+  async (plan) => {
+    const { page } = current();
+    return text(await submit(page, plan));
   },
 );
 

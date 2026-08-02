@@ -41,7 +41,7 @@ export interface ApiResult {
 }
 
 /** "a.b.c" 또는 "a.b[0].c" 로 값 하나를 꺼냅니다. */
-function getPath(obj: unknown, path: string): unknown {
+export function getPath(obj: unknown, path: string): unknown {
   let cur: unknown = obj;
   for (const key of path.replace(/\[(\d+)\]/g, '.$1').split('.')) {
     if (cur === null || cur === undefined) return undefined;
@@ -51,7 +51,7 @@ function getPath(obj: unknown, path: string): unknown {
 }
 
 /** "a.b.c" 자리에 값을 넣습니다. 중간이 없으면 만들지 않고 실패로 알립니다. */
-function setPath(obj: unknown, path: string, value: unknown): boolean {
+export function setPath(obj: unknown, path: string, value: unknown): boolean {
   const keys = path.replace(/\[(\d+)\]/g, '.$1').split('.');
   let cur: unknown = obj;
   for (const key of keys.slice(0, -1)) {

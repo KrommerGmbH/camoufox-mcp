@@ -5,6 +5,7 @@ import { closeBrowser, openBrowser, runningBrowsers } from './browser.js';
 import { safeKey } from './dump.js';
 import { assertWebUrl } from './guard.js';
 import { snapshot } from './snapshot.js';
+import { submit } from './submit.js';
 
 /** 브라우저를 띄우지 않고도 확인할 수 있는 안전장치들. */
 function checkGuards() {
@@ -213,6 +214,98 @@ async function main() {
   assert.ok(captured.length > 0, 'JSON 응답을 하나도 못 잡았습니다');
   assert.ok(withBody.length > 0, '본문이 담긴 JSON 응답이 없습니다');
   console.log(`본문 예시 키: ${Object.keys(withBody[0].body as object).slice(0, 5).join(', ')}`);
+
+  // ③-b **보낸 것**도 받아 적어야 합니다.
+  // "저장 버튼을 누르면 네이버에 무엇이 어떤 모양으로 가는가"를 모르면,
+  // 그 모양대로 보내는 것도 가로채서 고치는 것도 전부 찍는 것이 됩니다.
+  await page.evaluate(() =>
+    fetch('https://en.wikipedia.org/w/api.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 저장할값: '브리오 36206', 개수: 3 }),
+    }).catch(() => {}),
+  );
+  await page.waitForTimeout(1500);
+
+  const saved = recorder.writes().find((e) => e.url.includes('api.php'));
+  assert.ok(saved, '값을 바꾸는 요청을 못 잡았습니다');
+  assert.equal(saved.method, 'POST');
+  assert.ok((saved.sentBytes ?? 0) > 0, '보낸 크기를 안 적었습니다');
+  assert.ok(!('sent' in saved), '목록에 보낸 본문이 통째로 실렸습니다(토큰 낭비)');
+
+  const full = recorder.get(saved.ref);
+  assert.deepEqual(full?.sent, { 저장할값: '브리오 36206', 개수: 3 }, '보낸 본문이 다릅니다');
+  console.log(
+    `보낸 것 OK: writes 로 저장요청 1건만 골라짐(${saved.method} ${saved.sentBytes}바이트) · ` +
+      '목록엔 본문 빠짐 · ref 로 부르면 보낸 값 그대로',
+  );
+
+  // ④ 저장 가로채기 — **누르는 것은 코드가 하고, 나가는 요청은 우리가 통제합니다.**
+  //
+  // 여기서 확인하는 것이 핵심입니다: mode:'block' 이면 **버튼을 눌러도 서버로 안 갑니다.**
+  // 그래서 "저장 요청이 어떻게 생겼나"를 사람 없이 안전하게 알아낼 수 있습니다.
+  // (아래는 위키백과 API 를 저장 주소인 셈 치고 흉내 낸 것입니다. 위키에는 아무것도 안 씁니다.)
+  const 저장무늬 = '**/w/api.php*';
+  await page.evaluate(() => {
+    document.body.innerHTML = '<button id="save">저장하기</button><div id="done"></div>';
+    document.getElementById('save')!.onclick = () => {
+      void fetch('/w/api.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product: { name: '브리오 36206', salePrice: 96200 }, 개수: 3 }),
+      })
+        .then(() => {
+          document.getElementById('done')!.textContent = '보냄';
+        })
+        .catch(() => {
+          document.getElementById('done')!.textContent = '막힘';
+        });
+    };
+  });
+
+  const 막기 = await submit(page, {
+    urlPattern: 저장무늬,
+    mode: 'block',
+    click: { do: 'click', text: '저장하기' },
+    saveAs: 'smoke-save',
+  });
+  assert.equal(막기.ok, true, `저장 요청을 못 잡았습니다: ${막기.안내}`);
+  assert.equal(막기.잡은요청.length, 1, `잡은 요청이 ${막기.잡은요청.length}건입니다`);
+  assert.equal(막기.잡은요청[0].처리, '버림');
+  assert.deepEqual(
+    막기.잡은요청[0].본문,
+    { product: { name: '브리오 36206', salePrice: 96200 }, 개수: 3 },
+    '잡은 본문이 다릅니다',
+  );
+  // 진짜로 서버에 안 갔는지는 **화면이 압니다** — 요청이 막히면 브라우저가 실패로 알려줍니다.
+  await page.waitForFunction(() => document.getElementById('done')?.textContent === '막힘', undefined, {
+    timeout: 5_000,
+  });
+  assert.ok(막기.파일?.length, '본문을 파일로 안 남겼습니다');
+
+  // 가로채기를 반드시 풀어야 합니다. 안 풀면 다음 저장이 계속 막히는데 아무도 이유를 모릅니다.
+  const 푼뒤 = await page.evaluate(() =>
+    fetch('/w/api.php?action=query&format=json&meta=siteinfo').then((r) => r.status).catch(() => 0),
+  );
+  assert.ok(푼뒤 > 0, '작업이 끝났는데 가로채기가 안 풀렸습니다 (다음 요청까지 막힙니다)');
+
+  // 고치기: **본문에 없는 경로는 만들지 않아야** 합니다. 만들면 서버가 모르는 칸이 생깁니다.
+  const 고치기 = await submit(page, {
+    urlPattern: 저장무늬,
+    mode: 'patch',
+    click: { do: 'click', text: '저장하기' },
+    set: { 'product.salePrice': 88800, '있을리없는.칸': 1 },
+  });
+  assert.deepEqual(
+    고치기.잡은요청[0].바꾼것,
+    [{ 경로: 'product.salePrice', 전: 96200, 후: 88800 }],
+    '값을 안 바꿨거나 다르게 바꿨습니다',
+  );
+  assert.deepEqual(고치기.잡은요청[0].경로없음, ['있을리없는.칸'], '없는 경로를 만들어 버렸습니다');
+  console.log(
+    `저장 가로채기 OK: 코드가 눌렀고 · block 은 서버로 안 감(화면도 "막힘") · 본문 그대로 잡힘 · ` +
+      `patch 는 96200→88800 만 바꾸고 없는 칸은 안 만듦 · 끝나면 가로채기 풀림`,
+  );
 
   console.log('\n✅ 전부 통과. 창에서 직접 로그인하면 프로필에 그대로 남습니다.');
   console.log('   10초 뒤 창이 닫힙니다.');
