@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from 'playwright-core';
 import { act } from './act.js';
+import { goTo } from './browser.js';
 
 /**
  * 마켓에 로그인합니다.
@@ -33,7 +34,15 @@ interface Recipe {
   fields: Field[];
   submit?: { selectors: string[] } | null;
   error?: { selectors: string[] } | null;
-  check?: { api?: string; okStatus?: number; failStatus?: number; url?: string; loggedOutText?: string } | null;
+  check?: {
+    api?: string;
+    okStatus?: number;
+    failStatus?: number;
+    url?: string;
+    loggedOutText?: string;
+    /** 이 조각이 **주소**에 들어 있으면 로그아웃이다. 글자보다 정확하다(아래 판정() 설명 참고). */
+    loggedOutUrl?: string[];
+  } | null;
   /**
    * 자동입력 방지 문자를 어떻게 할지. **마켓마다 다르므로 표에서 읽습니다.**
    * `how: 'random'` = 아무 글자나 넣어도 통과하는 마켓(네이버 커머스가 그렇다 — 2026-08-02 확인).
@@ -51,7 +60,9 @@ export interface LoginResult {
   단계: '레시피' | '쿠키' | '입력' | '보내기' | '확인';
   이유?: string;
   url: string;
-  /** 사람이 손대야 하는 것(있으면). 자동입력 방지 글자·인증번호 같은 것. */
+  /** 실패했을 때 화면에 떠 있던 글자(앞부분만). 왜 안 됐는지는 화면이 알고 있습니다. */
+  화면?: string;
+  /** 사람이 손대야 하는 것(있으면). 2단계 인증·기기 등록 같은 것. */
   사람필요?: string;
   /** 무엇을 했는지 한 줄씩. **값은 절대 안 적습니다.** */
   한일: string[];
@@ -112,18 +123,94 @@ function 아무글자(n = 8): string {
   return s;
 }
 
-/** 지금 로그인 되어 있는지 마켓 API 로 물어봅니다. 화면 글자보다 정확합니다. */
-async function 로그인됐나(page: Page, check: Recipe['check']): Promise<boolean | null> {
-  if (!check?.api) return null;
+/**
+ * 지금 로그인 되어 있는지 마켓 API 로 물어봅니다. 화면 글자보다 정확합니다.
+ *
+ * **화면 안에서 fetch 로 부르면 안 됩니다.** 로그인 직후에는 화면이 아직
+ * `accounts.commerce.naver.com` 에 있는데, 확인 API 는 `sell.smartstore.naver.com` 에 있습니다.
+ * 브라우저는 다른 도메인 부르기를 막고 이유도 안 알려 줍니다 —
+ * 그러면 "로그인 안 됐다"로 잘못 읽습니다(2026-08-02 실제로 그랬습니다).
+ *
+ * 그래서 **브라우저 바깥(context.request)에서** 부릅니다.
+ * 쿠키는 창과 같은 것을 씁니다. 도메인 제한은 화면 안에만 있는 규칙이라 여기엔 없습니다.
+ */
+async function 로그인상태(
+  page: Page,
+  context: BrowserContext,
+  check: Recipe['check'],
+): Promise<{ 상태: number | null; 어디서: string }> {
+  if (!check?.api) return { 상태: null, 어디서: '확인 방법이 표에 없음' };
 
-  return page
-    .evaluate(async (u) => {
-      const r = await fetch(u, { credentials: 'include' });
+  // ① 화면이 그 API 와 **같은 도메인**이면 화면 안에서 부릅니다.
+  //    화면이 평소에 쓰는 쿠키·헤더가 그대로 실려서 가장 정확합니다.
+  try {
+    if (new URL(page.url()).origin === new URL(check.api).origin) {
+      const s = await page.evaluate(async (u) => (await fetch(u, { credentials: 'include' })).status, check.api);
 
-      return r.status;
-    }, check.api)
-    .then((s) => s === (check.okStatus ?? 200))
-    .catch(() => null);
+      return { 상태: s, 어디서: '화면 안' };
+    }
+  } catch {
+    /* 주소가 about:blank 같으면 아래로 넘어갑니다. */
+  }
+
+  // ② 도메인이 다르면 화면 안에서는 못 부릅니다(브라우저가 막습니다).
+  //    브라우저 **밖**에서 부릅니다. 쿠키는 창과 같은 것을 씁니다.
+  const r = await context.request.get(check.api, { failOnStatusCode: false, timeout: 15_000 }).catch(() => null);
+
+  return { 상태: r ? r.status() : null, 어디서: '브라우저 밖' };
+}
+
+/**
+ * 상태 번호를 "로그인 됐다/안 됐다"로 읽습니다.
+ *
+ * **아는 번호가 아니면 화면을 봅니다.** 마켓이 API 를 바꾸면 표에 적힌 번호가 안 맞게 됩니다
+ * (실측 2026-08-02: 로그인이 됐는데도 `/api/login/init` 이 400 을 줬습니다.
+ *  표에는 "200 이면 로그인, 401 이면 로그아웃"이라고 적혀 있었습니다).
+ * 그때 "로그인 안 됨"으로 단정하면 멀쩡한 로그인을 실패로 보고합니다.
+ * 화면은 늘 있으니, 모르는 번호가 오면 화면에 로그아웃 글자가 보이는지로 정합니다.
+ */
+async function 판정(
+  page: Page,
+  context: BrowserContext,
+  check: Recipe['check'],
+): Promise<{ 됐나: boolean | null; 어떻게: string }> {
+  const { 상태, 어디서 } = await 로그인상태(page, context, check);
+  const ok = check?.okStatus ?? 200;
+  const fail = check?.failStatus;
+
+  if (상태 === ok) return { 됐나: true, 어떻게: `${어디서} ${상태} (아는 번호)` };
+  if (fail !== undefined && 상태 === fail) return { 됐나: false, 어떻게: `${어디서} ${상태} (아는 번호)` };
+
+  if (!check?.url) {
+    return { 됐나: 상태 === null ? null : false, 어떻게: `${어디서} ${상태 ?? '못 물어봄'} (모르는 번호인데 화면으로 볼 방법이 표에 없음)` };
+  }
+
+  // **로그인해야만 볼 수 있는 화면으로 가 봅니다.** 로그아웃이면 마켓이 딴 데로 보냅니다.
+  // 주소로 보는 것이 화면 글자로 보는 것보다 정확합니다 —
+  // 글자는 화면이 다 그려지기 전에 읽으면 비어 있어서 "로그인됨"으로 잘못 읽습니다
+  // (실측 2026-08-02: 로그아웃 화면인데 글자가 아직 없어서 로그인이라고 판단했습니다).
+  await goTo(page, check.url).catch(() => {});
+  await page.waitForTimeout(3_000);
+  const 지금 = page.url();
+
+  const 튕김 = (check.loggedOutUrl ?? []).find((조각) => 지금.includes(조각));
+  if (튕김) return { 됐나: false, 어떻게: `${어디서} ${상태 ?? '못 물어봄'} 은 모르는 번호 → 주소를 봄: "${튕김}" 으로 튕김(로그아웃)` };
+
+  if (check.loggedOutText) {
+    const 로그아웃 = (await 화면요약(page)).includes(check.loggedOutText);
+    if (로그아웃) return { 됐나: false, 어떻게: `${어디서} ${상태 ?? '못 물어봄'} 은 모르는 번호 → 화면에 "${check.loggedOutText}" 가 보임(로그아웃)` };
+  }
+
+  return { 됐나: true, 어떻게: `${어디서} ${상태 ?? '못 물어봄'} 은 모르는 번호 → 주소가 안 튕김(로그인): ${지금.slice(0, 60)}` };
+}
+
+/** 실패했을 때 화면에 무엇이 떠 있는지. **왜 안 됐는지는 화면이 알고 있습니다.** */
+async function 화면요약(page: Page): Promise<string> {
+  const txt = await page
+    .evaluate(() => (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 400))
+    .catch(() => '');
+
+  return txt;
 }
 
 /**
@@ -185,17 +272,25 @@ export async function login(page: Page, context: BrowserContext, market: string)
   }
 
   const 홈 = recipe.check?.url ?? recipe.baseUrl ?? recipe.loginUrl;
-  await page.goto(홈, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+  await goTo(page, 홈).catch(() => {});
   await page.waitForTimeout(2_000);
-  if ((await 로그인됐나(page, recipe.check)) === true) {
-    한일.push('이미 로그인되어 있음 — 로그인 안 함');
+  const 첫판정 = await 판정(page, context, recipe.check);
+  if (첫판정.됐나 === true) {
+    한일.push(`이미 로그인되어 있음 — 로그인 안 함 (${첫판정.어떻게})`);
 
     return 결과({ ok: true, 단계: '쿠키' });
   }
 
   // ── ③ 로그인 화면에서 값 넣기 ───────────────────────────────────────────
+  //
+  // **죽은 쿠키를 먼저 버립니다.** 오래된 쿠키를 그대로 둔 채 로그인하면
+  // 마켓이 그 쿠키를 보고 `api/logout` 을 불러 방금 만든 세션까지 지워 버립니다
+  // (실측 2026-08-02: 12시간 지난 쿠키를 넣었더니 그랬습니다).
+  await context.clearCookies().catch(() => {});
+  한일.push('죽은 쿠키를 버리고 처음부터 로그인합니다');
+
   const loginUrl = recipe.loginUrl.replace('{returnUrl}', encodeURIComponent(홈));
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await goTo(page, loginUrl);
   await page.waitForTimeout(2_000);
 
   for (const f of recipe.fields) {
@@ -227,7 +322,7 @@ export async function login(page: Page, context: BrowserContext, market: string)
   await page.waitForTimeout(3_000);
 
   // ── ⑤ 확인. 방지 문자가 새로 떴으면 한 번만 더 채워서 보냅니다 ──────────
-  if ((await 로그인됐나(page, recipe.check)) !== true) {
+  if ((await 판정(page, context, recipe.check)).됐나 !== true) {
     const 다시 = await 방지문자채우기(page, recipe.captcha);
     if (다시 !== null) {
       한일.push(`방지 문자가 새로 떠서 다시 ${다시}자 넣고 한 번 더 보냄`);
@@ -237,7 +332,9 @@ export async function login(page: Page, context: BrowserContext, market: string)
     }
   }
 
-  const 됐나 = await 로그인됐나(page, recipe.check);
+  const 마지막 = await 판정(page, context, recipe.check);
+  한일.push(`로그인 확인 — ${마지막.어떻게}`);
+  const 됐나 = 마지막.됐나;
   if (됐나 !== true) {
     // 화면이 이유를 적어 뒀으면 그것을 그대로 가져옵니다. 우리가 지어내지 않습니다.
     let 화면말 = '';
@@ -251,10 +348,13 @@ export async function login(page: Page, context: BrowserContext, market: string)
       message: 화면말.trim().slice(0, 200) || '로그인 확인 실패',
     }).catch(() => {});
 
+    // 왜 안 됐는지는 **화면이 알고 있습니다.** 우리가 정해 둔 오류 자리에 안 적혀 있을 수 있으니
+    // 화면 글자를 조금 그대로 담아 줍니다. 이걸 보고 다음에 무엇을 고칠지 정합니다.
     return 결과({
       ok: false,
       단계: '확인',
       이유: 화면말.trim() || '로그인이 안 됐습니다(마켓 API 가 아니라고 답했습니다).',
+      화면: await 화면요약(page),
       사람필요: recipe.manual?.reason ?? '창에서 직접 로그인해 주세요.',
     });
   }

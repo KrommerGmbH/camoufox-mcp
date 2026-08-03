@@ -75,6 +75,11 @@ export interface SubmitResult {
   잡은요청: Caught[];
   /** 본문을 파일로 남겼으면 그 경로. grep 으로 찾아보면 됩니다. */
   파일?: string[];
+  /**
+   * 요청이 하나도 안 나갔을 때 화면에 떠 있던 글자(앞부분만).
+   * **왜 안 나갔는지는 화면이 알고 있습니다** — 대개 "필수값을 입력하세요" 같은 안내창입니다.
+   */
+  화면?: string;
   안내: string;
 }
 
@@ -184,12 +189,22 @@ export async function submit(page: Page, plan: SubmitPlan): Promise<SubmitResult
           ? `요청 ${caught.length}건의 본문을 고쳐서 네이버로 보냈습니다. **실제로 저장됩니다.**`
           : `요청 ${caught.length}건을 그대로 네이버로 보냈습니다. **실제로 저장됩니다.**`;
 
+  // 요청이 안 나갔으면 **화면을 그대로 담아 줍니다.** 대개 화면이 먼저 막은 것이고,
+  // 왜 막았는지는 화면에 적혀 있습니다("필수 항목을 입력해 주세요" 같은 안내창).
+  const 화면 =
+    caught.length === 0
+      ? await page
+          .evaluate(() => (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 500))
+          .catch(() => '')
+      : '';
+
   return {
     ok: caught.length > 0 && 누르기.ok,
     mode: plan.mode,
     누르기,
     잡은요청: caught,
     ...(files.length ? { 파일: files } : {}),
+    ...(화면 ? { 화면 } : {}),
     안내,
   };
 }

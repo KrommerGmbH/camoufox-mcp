@@ -200,6 +200,46 @@ export async function closePage(index: number): Promise<boolean> {
   return true;
 }
 
+/**
+ * 주소로 갑니다. **`#/` 뒤만 바뀌는 이동도 제대로 갑니다.**
+ *
+ * 왜 따로 만드나 (2026-08-02 에 데인 것):
+ * 네이버 판매자센터는 주소가 `.../#/products/edit/123` 모양입니다(`#` 뒤가 화면 이름).
+ * `#` 앞이 같고 뒤만 다른 주소로 `page.goto` 를 부르면 **브라우저가 문서를 다시 안 읽습니다.**
+ * 그러면 화면 안 프로그램이 못 알아채고 **앞 화면 그대로** 있습니다.
+ * 그래서 "저장 버튼이 없다"거나 앞 상품 화면을 다음 상품으로 착각하게 됩니다.
+ *
+ * 고치는 법: `#` 앞이 같으면 **화면 안에서 주소를 바꿉니다**(`location.href`).
+ * 그러면 화면 안 프로그램이 알아채고 그 화면을 그립니다.
+ */
+export async function goTo(page: Page, url: string, timeout = 45_000): Promise<void> {
+  const 앞 = (u: string) => u.split('#')[0];
+  const 같은문서 = url.includes('#') && 앞(page.url()) === 앞(url);
+
+  const 뒤 = (u: string) => u.split('#')[1] ?? '';
+
+  if (같은문서) {
+    const 이전 = page.url();
+    await page.evaluate((u) => {
+      window.location.href = u;
+    }, url);
+    // 주소가 실제로 바뀔 때까지 기다립니다. 안 기다리면 앞 화면을 보고 판단하게 됩니다.
+    await page.waitForFunction((전) => location.href !== 전, 이전, { timeout: 10_000 }).catch(() => {});
+    await page.waitForTimeout(1_500);
+  }
+
+  // **주소를 바꿔도 안 갈 때가 있습니다.** 화면 안 프로그램이 안내창을 띄워 놓고 못 가게 막거나,
+  // 주소만 바꾸고 도로 되돌려 놓기 때문입니다(실측 2026-08-02: 대시보드에서 상품목록으로 안 감).
+  // 그때는 **문서를 통째로 다시 읽습니다.** 느리지만 반드시 그 화면으로 갑니다.
+  if (!같은문서 || 뒤(page.url()) !== 뒤(url)) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+    if (같은문서) await page.reload({ waitUntil: 'domcontentloaded', timeout }).catch(() => {});
+  }
+
+  // 화면 안 프로그램은 주소가 바뀐 뒤에 자료를 받아옵니다. 조용해질 때까지 한 번 더 기다립니다.
+  await page.waitForLoadState('networkidle', { timeout }).catch(() => {});
+}
+
 /** 지금 로그인 상태를 파일로 저장합니다. 창을 닫아도 다음에 그대로 이어집니다. */
 export async function saveNow(): Promise<number> {
   if (!context) return 0;

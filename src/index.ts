@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { act } from './act.js';
 import { apiCall, apiPatch } from './api.js';
-import { closeBrowser, current, openBrowser, status } from './browser.js';
+import { closeBrowser, current, goTo, openBrowser, status } from './browser.js';
 import { importChromeCookies, importFirefoxCookies } from './cookies.js';
 import { outDir, writeDump } from './dump.js';
 import { extractFromHtml } from './extract.js';
@@ -101,9 +101,8 @@ server.registerTool(
   async ({ url, waitForText, timeoutMs, closePopups }) => {
     const { page } = current();
     const timeout = timeoutMs ?? 45_000;
-    await page.goto(assertWebUrl(url), { waitUntil: 'domcontentloaded', timeout });
-    // SPA 는 주소만 바뀌고 내용은 나중에 옵니다. 그래서 조용해질 때까지 한 번 더 기다립니다.
-    await page.waitForLoadState('networkidle', { timeout }).catch(() => {});
+    // `#/` 뒤만 바뀌는 이동도 제대로 가고, 조용해질 때까지 기다리는 일까지 goTo 가 합니다.
+    await goTo(page, assertWebUrl(url), timeout);
     if (waitForText) {
       await page.getByText(waitForText, { exact: false }).first().waitFor({ timeout }).catch(() => {});
     }
