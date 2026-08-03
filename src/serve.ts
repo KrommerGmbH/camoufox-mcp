@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { closeBrowser, closePage, current, listPages, openBrowser, saveNow, status, usePage } from './browser.js';
+import { closeBrowser, closePage, current, goTo, listPages, openBrowser, saveNow, status, usePage } from './browser.js';
 import { outDir, writeDump } from './dump.js';
 import { extractFromHtml } from './extract.js';
 import { assertWebUrl } from './guard.js';
@@ -49,8 +49,9 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   async goto(a) {
     const { page } = current();
     const timeout = a.timeoutMs ?? 45_000;
-    await page.goto(assertWebUrl(a.url), { waitUntil: 'domcontentloaded', timeout });
-    await page.waitForLoadState('networkidle', { timeout }).catch(() => {});
+    // `#` 뒤만 바뀌는 주소는 `page.goto` 로 가면 화면이 안 바뀝니다(앞 화면이 그대로 남습니다).
+    // 그래서 여기서도 `goTo` 를 씁니다. `browser_navigate`·로그인·조사 스크립트와 같은 길입니다.
+    await goTo(page, assertWebUrl(a.url), timeout);
     if (a.waitForText) {
       await page.getByText(a.waitForText, { exact: false }).first().waitFor({ timeout }).catch(() => {});
     }

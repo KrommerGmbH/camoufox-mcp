@@ -1,0 +1,289 @@
+/**
+ * **깊이 조사** — 메뉴만 훑는 조사(`inspect-menu.mjs`)가 못 잡는 두 가지를 잡습니다.
+ *
+ *   ① 주소에 번호가 붙어야 내용이 나오는 화면 (상품 상세·주문 상세·진단 상세 …)
+ *   ② 눌러야 열리는 것 안쪽 (접힌 묶음 · 팝업/모달)
+ *
+ * **가장 중요한 규칙 — 목록의 줄은 화면 글자가 아니라 네트워크 JSON 에서 꺼냅니다.**
+ * 화면 글자를 긁으면 느리고, 화면이 바뀌면 깨지고, 번호가 화면에 아예 안 나오는 경우도 많습니다.
+ * JSON 에는 번호도 이름도 상태도 다 들어 있습니다. **모든 화면에 똑같이 적용합니다.**
+ * (실측 2026-08-03: 등록 정보 검토 화면은 `sellerTags: []` · `notRegisteredAttributes: [...]` 처럼
+ *  "무엇이 미등록인지"까지 JSON 이 그대로 알려줍니다. 화면에서 "미등록" 글자를 찾을 이유가 없습니다.)
+ *
+ * **아무것도 저장하지 않습니다.** 여는 버튼만 누르고, 닫을 때는 `취소`·`닫기` 만 누릅니다.
+ * `저장`·`삭제`·`발송` 은 절대 안 누릅니다(아래 여는버튼/닫는버튼 목록 참고).
+ *
+ * 실행:
+ *   node scripts/inspect-deep.mjs <화면키> <목록주소> [상세주소틀] [행수]
+ * 예:
+ *   node scripts/inspect-deep.mjs 01-16-listing-review \
+ *     "https://sell.smartstore.naver.com/#/product/product-diagnosis" \
+ *     "https://sell.smartstore.naver.com/#/product/product-diagnosis?channelProductNo={id}" 2
+ *
+ * 상세주소틀을 안 주면 목록만 조사합니다(그래도 JSON 에서 줄을 꺼내 기록해 둡니다).
+ */
+const PORT = process.env.CAMOUFOX_PORT ?? 8787;
+
+async function call(op, args = {}) {
+  const res = await fetch(`http://localhost:${PORT}/call`, { method: 'POST', body: JSON.stringify({ op, ...args }) });
+  const j = await res.json();
+  if (j.error) throw new Error(`${op}: ${j.error}`);
+  return j;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * **여는 버튼** — 눌러도 아무것도 저장되지 않는, 화면을 펼치거나 팝업을 여는 글자만 적습니다.
+ * 여기 없는 글자는 안 누릅니다. 목록을 늘릴 때는 "눌러도 마켓에 값이 안 남는가"를 먼저 따집니다.
+ */
+const 여는버튼 = ['수정', '설정', '변경', '선택', '추가', '더보기', '펼치기', '열기'];
+
+/**
+ * 여는버튼에서 **일부러 뺀 것과 이유** (다음 사람이 "왜 없지" 하고 다시 넣지 않게 적어 둡니다).
+ *   `조회` · `검색` — 누르면 다른 화면으로 가 버립니다. 실측 2026-08-03: 상품수정 화면에서
+ *                     `조회` 를 눌러 상품목록으로 튕겨 나가 그 다음 조사가 전부 헛돌았습니다.
+ *   `등록`          — 새로 만드는 화면으로 갑니다. 빈 것을 만들어 두고 오는 사고가 납니다.
+ */
+
+/**
+ * **접힌 묶음을 펴는 것** — 버튼이 아니라 `div` 인 경우가 많아 따로 봅니다.
+ * 네이버 상품수정 화면의 접힌 칸을 펴는 것은 **글자가 정확히 `메뉴토글` 인 `<a>`** 입니다(한 화면에 18개).
+ *
+ * ⚠️ **"들어 있으면" 으로 찾으면 안 됩니다.** 그 묶음의 제목 줄(`div`)에도 `메뉴토글` 이 들어 있는데
+ * (예: `검색설정 도움말 태그(독일약국화장품,흉터상처,…) 메뉴토글`), 그 `div` 는 가로 2,226px 짜리라
+ * 가운데를 누르면 **빈 자리를 누릅니다.** 아무 일도 안 일어나고 조사가 통째로 헛돕니다(2026-08-03 실측).
+ * 그래서 **글자가 정확히 같은 것만** 누릅니다.
+ */
+const 펴는글자 = ['메뉴토글', '펼치기', '더보기', '접기'];
+
+/** **닫는 버튼** — 팝업을 되돌려 닫는 글자. `저장`·`확인` 은 값을 남길 수 있어 **일부러 뺐습니다.** */
+const 닫는버튼 = ['취소', '닫기', '모달 닫기', '뒤로'];
+
+/** 절대 안 누르는 글자. 실수로 여는버튼 목록에 들어가도 여기서 한 번 더 막습니다. */
+const 금지버튼 = ['저장', '삭제', '발송', '전송', '확인', '적용', '결제', '주문', '승인', '반영'];
+
+const [, , 화면키, 목록주소, 상세주소틀, 행수인자, 칸이름인자] = process.argv;
+if (!화면키 || !목록주소) {
+  console.error('사용법: node scripts/inspect-deep.mjs <화면키> <목록주소> [상세주소틀] [행수] [번호칸이름]');
+  process.exit(1);
+}
+const 행수 = Number(행수인자 ?? 2);
+
+/** 값이 든 그림·글꼴 같은 것은 목록 응답일 리 없습니다. 미리 버립니다. */
+const 잡음 = /\.(svg|png|jpe?g|gif|woff2?|css|js)(\?|$)|facebook|pstatic\.net\/(?!.*json)/i;
+
+/**
+ * **어느 화면에나 뜨는 곁들이 응답** — 알림·공지·설정값 같은 것입니다.
+ * 이것들도 줄이 여러 개라서 안 빼면 **그 화면의 목록으로 잘못 고릅니다.**
+ * (실측 2026-08-03: 상품목록 화면에서 알림 10줄을 목록으로 착각해 조사가 통째로 헛돌았습니다.)
+ */
+const 곁들이 = /notification|user-activities|popup-notice|\/api\/context|shared\/codes|dock\/|badges|i18n|jwt|dns-is-safe/i;
+
+/**
+ * **목록의 줄이 들어 있는 응답을 찾습니다.**
+ *
+ * 어떻게 고르나: 응답 본문 안의 **객체 배열 중 가장 긴 것**을 그 화면의 목록으로 봅니다.
+ * 이름을 정해 놓지 않는 이유 — 마켓마다 `items` · `content` · `list` · `data.rows` 로 제각각이고,
+ * 이름을 찍어서 고르면 엉뚱한 배열(선택상자 후보 같은 것)을 목록으로 착각합니다.
+ * 길이로 고르면 마켓이 늘어도 이 코드는 안 고칩니다.
+ */
+function 가장긴객체배열(본문) {
+  let 최고 = null;
+  const 훑기 = (o, 길) => {
+    if (Array.isArray(o)) {
+      if (o.length && o.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+        if (!최고 || o.length > 최고.줄.length) 최고 = { 길, 줄: o };
+      }
+      return;
+    }
+    if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) 훑기(v, 길 ? `${길}.${k}` : k);
+  };
+  훑기(본문, '');
+  return 최고;
+}
+
+/**
+ * **쪽 나눔이 있는 응답인가?**
+ *
+ * 줄이 가장 많은 것만 보면 **찾아보기용 목록**(택배사 목록 같은 것)에 집니다.
+ * 실측 2026-08-03: 상품목록 화면에서 택배사 목록이 상품 81줄보다 많아서, 조사가
+ * `#/products/edit/CJGLS`(택배사 코드) 로 들어가 통째로 헛돌았습니다.
+ *
+ * 가르는 기준: **그 화면의 진짜 목록은 쪽이 나뉘어 있습니다**(전체 개수·쪽 번호가 같이 옵니다).
+ * 찾아보기용 목록은 한 번에 다 주므로 쪽 나눔 칸이 없습니다. 마켓이 늘어도 이 기준은 그대로입니다.
+ */
+const 쪽나눔칸 =
+  /^(total|totalCount|totalItemCount|totalElements|totalPages|page|currentPage|pageNo|pageSize|size|hasNext|numberOfElements)$/i;
+function 쪽나눔인가(본문) {
+  let 수 = 0;
+  const 훑기 = (o, 깊이) => {
+    if (깊이 > 3 || !o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const [k, v] of Object.entries(o)) {
+      if (쪽나눔칸.test(k) && (typeof v === 'number' || typeof v === 'boolean')) 수++;
+      else 훑기(v, 깊이 + 1);
+    }
+  };
+  훑기(본문, 0);
+  return 수 >= 2;
+}
+
+/** 한 줄에서 "번호로 쓸 만한 칸"을 고릅니다. 이름을 찍지 않고 **모양으로** 고릅니다. */
+function 번호칸들(줄) {
+  return Object.entries(줄)
+    .filter(([k, v]) => {
+      if (v === null || typeof v === 'object') return false;
+      const s = String(v);
+      // 6자리 이상 숫자이거나, 이름에 No/Id/Seq 가 붙은 칸.
+      return /^\d{6,}$/.test(s) || /(no|id|seq)$/i.test(k);
+    })
+    .map(([k, v]) => [k, String(v)]);
+}
+
+/** 사람이 읽는 이름으로 쓸 만한 칸(제목·상품명 등). 화면에서 그 줄을 찾아 누를 때 씁니다. */
+function 이름칸(줄) {
+  const 후보 = Object.entries(줄).find(
+    ([k, v]) => typeof v === 'string' && v.length > 3 && /name|title|subject|productName/i.test(k),
+  );
+  return 후보 ? 후보[1] : null;
+}
+
+console.log(`※ 아무것도 저장하지 않습니다. 여는 버튼만 누르고 닫을 때는 취소·닫기만 누릅니다.\n`);
+
+// ── ① 목록 화면: 네트워크 JSON 에서 줄을 꺼냅니다 ──────────────────────────
+console.log(`① 목록 화면 열기: ${목록주소}`);
+// 이미 그 화면에 서 있으면 목록을 **다시 안 부릅니다**(그러면 줄을 못 찾습니다).
+// 그래서 먼저 다른 화면(첫 화면)에 들렀다 옵니다. 화면이 바뀌어야 목록을 새로 받아옵니다.
+await call('goto', { url: 'https://sell.smartstore.naver.com/#/home/dashboard' }).catch(() => {});
+await sleep(2500);
+await call('netclear');
+await call('goto', { url: 목록주소 });
+await sleep(7000);
+
+const 응답들 = (await call('netlist')).filter(
+  (e) => !잡음.test(e.url) && !곁들이.test(e.url) && e.status === 200 && (e.bytes ?? 0) > 200,
+);
+// **전부 본 뒤에 고릅니다.** 순서: ① 쪽이 나뉜 것이 이깁니다 ② 그 다음에 줄이 많은 것.
+// 먼저 걸리는 것을 쓰면 곁들이·찾아보기 응답이 이기는 일이 생깁니다.
+let 목록 = null;
+for (const e of 응답들) {
+  const r = await call('netbody', { ref: e.ref }).catch(() => null);
+  const 본문 = r?.body;
+  if (!본문 || typeof 본문 !== 'object') continue;
+  const 찾음 = 가장긴객체배열(본문);
+  // 두 줄 미만이면 목록이라 보기 어렵습니다(설정값 한 덩어리일 수 있습니다).
+  if (!찾음 || 찾음.줄.length < 2) continue;
+  const 후보 = { url: e.url, 길: 찾음.길, 줄: 찾음.줄, 쪽나눔: 쪽나눔인가(본문) };
+  if (!목록) 목록 = 후보;
+  else if (후보.쪽나눔 !== 목록.쪽나눔) 목록 = 후보.쪽나눔 ? 후보 : 목록;
+  else if (후보.줄.length > 목록.줄.length) 목록 = 후보;
+}
+
+if (!목록) {
+  console.log('   ✗ 목록이 든 응답을 못 찾았습니다. 화면이 다 그려질 때까지 더 기다려야 할 수 있습니다.');
+} else {
+  console.log(`   목록 응답: ${목록.url.replace(/\?.*$/, '')}`);
+  console.log(`   줄이 있는 자리: ${목록.길} · ${목록.줄.length}줄 · 쪽나눔 ${목록.쪽나눔 ? '있음' : '없음'}`);
+  console.log(`   한 줄의 칸: ${Object.keys(목록.줄[0]).join(', ')}`);
+  console.log(`   번호로 쓸 칸: ${번호칸들(목록.줄[0]).map(([k, v]) => `${k}=${v}`).join(' · ') || '(없음)'}`);
+}
+
+await call('dump', { menuKey: 화면키, menuPath: `깊이조사 > ${화면키} > 목록`, note: 목록 ? `목록 응답 ${목록.url}` : '목록 응답 못 찾음' });
+
+// ── ② 상세 화면 + 눌러야 열리는 것 ───────────────────────────────────────
+if (!상세주소틀 || !목록) {
+  console.log('\n상세 주소틀이 없어 여기까지 합니다.');
+  await call('save').catch(() => {});
+  process.exit(0);
+}
+
+// 주소틀의 `{id}` 자리에 넣을 칸을 고릅니다. 주소틀에 칸 이름이 적혀 있으면 그것을 씁니다.
+// 예: `?channelProductNo={id}` → 줄에서 `channelProductNo` 를 찾습니다.
+// 칸 이름을 직접 준 경우가 가장 셉니다. **주소마다 받는 번호가 다르기 때문입니다.**
+// (네이버 실측: 진단 화면은 `channelProductNo`, 상품수정 화면은 `id`(editId) 를 받습니다. 서로 다른 번호입니다.)
+const 틀에적힌칸 = 상세주소틀.match(/[?&]([A-Za-z]\w*)=\{id\}/)?.[1];
+const 고른칸 =
+  (칸이름인자 && 목록.줄[0][칸이름인자] !== undefined && 칸이름인자) ||
+  (틀에적힌칸 && 목록.줄[0][틀에적힌칸] !== undefined && 틀에적힌칸) ||
+  번호칸들(목록.줄[0])[0]?.[0] ||
+  null;
+if (!고른칸) {
+  console.log('\n✗ 줄에서 번호로 쓸 칸을 못 찾았습니다.');
+  process.exit(1);
+}
+console.log(`\n② 상세 화면 — 주소에 넣을 칸: ${고른칸}`);
+
+for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
+  const id = String(줄[고른칸]);
+  const 이름 = 이름칸(줄) ?? '';
+  console.log(`\n[${i + 1}/${행수}] ${고른칸}=${id}  ${이름.slice(0, 40)}`);
+
+  await call('netclear');
+  await call('goto', { url: 상세주소틀.replace('{id}', id) });
+  await sleep(5000);
+
+  const 상세키 = `${화면키}-detail`;
+  if (i === 0) {
+    const d = await call('dump', { menuKey: 상세키, menuPath: `깊이조사 > ${화면키} > 상세`, note: `${고른칸}=${id}` });
+    console.log(`   상세 기록: 요소 ${d.elements} · 입력칸 ${d.fields} · API ${d.apis}`);
+  }
+
+  // 상세 화면에 있는 "여는 버튼"을 하나씩 눌러 봅니다.
+  const 전 = await call('snapshot', { limit: 600 });
+  const 전ref = new Set(전.elements.map((e) => e.ref));
+  const 열것 = 전.elements.filter((e) => {
+    // `??` 는 빈 글자를 그냥 통과시킵니다. `name` 이 빈 글자면 `text` 를 봐야 하므로 `||` 를 씁니다.
+    // (이것 때문에 `<a>메뉴토글</a>` 18개를 하나도 못 찾았습니다 — 2026-08-03)
+    const 글 = (e.name || e.text || '').trim();
+    if (!글 || 금지버튼.some((x) => 글 === x)) return false;
+    // 팝업을 여는 버튼·링크는 **글자가 정확히 같을 때만** 누릅니다(비슷한 글자에 잘못 눌리지 않게).
+    if ((e.tag === 'button' || e.tag === 'a') && 여는버튼.some((x) => 글 === x)) return true;
+    // 접힌 묶음을 펴는 것도 **글자가 정확히 같은 것만** 누릅니다(위 펴는글자 설명 참고).
+    return 펴는글자.some((x) => 글 === x);
+  });
+  console.log(`   눌러서 열 것 ${열것.length}개`);
+
+  let 팝업번호 = 0;
+  for (const 버튼 of 열것) {
+    const 글 = (버튼.name || 버튼.text || '').trim();
+    try {
+      await call('click', { ref: 버튼.ref, closePopups: false });
+      await sleep(2500);
+
+      const 후 = await call('snapshot', { limit: 600 });
+      const 새것 = 후.elements.filter((e) => !전ref.has(e.ref));
+      if (!새것.length) {
+        console.log(`     "${글}" — 새로 나온 것 없음(펼침이 아니었거나 이미 열려 있었습니다)`);
+        continue;
+      }
+
+      팝업번호++;
+      const 팝업키 = `${화면키}-detail-popup-${String(팝업번호).padStart(2, '0')}`;
+      const d = await call('dump', {
+        menuKey: 팝업키,
+        menuPath: `깊이조사 > ${화면키} > 상세 > "${글}" 눌러서 열린 것`,
+        note: `${고른칸}=${id} · 새로 나온 요소 ${새것.length}개`,
+      });
+      const 입력 = 새것.filter((e) => e.tag === 'input' || e.tag === 'textarea' || e.tag === 'select');
+      console.log(
+        `     "${글}" → 새 요소 ${새것.length}개 (입력칸 ${입력.length}개) → ${팝업키}` +
+          (입력.length ? `  [${입력.map((e) => e.placeholder ?? e.name ?? '?').slice(0, 3).join(' · ')}]` : ''),
+      );
+
+      // 되돌려 닫습니다. **취소·닫기만** 누릅니다.
+      const 닫을것 = 후.elements.find((e) => 닫는버튼.includes((e.name || e.text || '').trim()));
+      if (닫을것) {
+        await call('click', { ref: 닫을것.ref, closePopups: false }).catch(() => {});
+        await sleep(1500);
+      } else {
+        // 닫는 버튼이 없으면 화면을 다시 읽어서 원래대로 돌립니다(저장 위험 없음).
+        await call('goto', { url: 상세주소틀.replace('{id}', id) });
+        await sleep(4000);
+      }
+    } catch (e) {
+      console.log(`     "${글}" — ✗ ${String(e).split('\n')[0]}`);
+    }
+  }
+}
+
+await call('save').catch(() => {});
+console.log('\n완료. 저장한 것은 하나도 없습니다.');
