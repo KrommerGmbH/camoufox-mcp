@@ -139,6 +139,19 @@ function 번호칸들(줄) {
     .map(([k, v]) => [k, String(v)]);
 }
 
+/**
+ * **요소 하나를 알아보는 열쇠.**
+ *
+ * ⚠️ `ref`(e1 · f12 …) 로 견주면 안 됩니다. `ref` 는 **그 스냅샷 안의 순번**일 뿐이라
+ * 화면이 바뀌면 **같은 번호가 다른 것을 가리킵니다.** 그래서 팝업이 열려도
+ * "새로 나온 것 없음" 으로 나옵니다(2026-08-03 실측: 19번 눌러 전부 "없음" 이었습니다).
+ *
+ * 그래서 **생김새로** 알아봅니다 — 태그 · 글자 · 안내글. 이건 화면이 다시 그려져도 그대로입니다.
+ */
+function 열쇠(e) {
+  return [e.tag, (e.name || e.text || '').trim().slice(0, 60), e.placeholder || ''].join('|');
+}
+
 /** 사람이 읽는 이름으로 쓸 만한 칸(제목·상품명 등). 화면에서 그 줄을 찾아 누를 때 씁니다. */
 function 이름칸(줄) {
   const 후보 = Object.entries(줄).find(
@@ -229,7 +242,7 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
 
   // 상세 화면에 있는 "여는 버튼"을 하나씩 눌러 봅니다.
   const 전 = await call('snapshot', { limit: 600 });
-  const 전ref = new Set(전.elements.map((e) => e.ref));
+  const 전열쇠 = new Set(전.elements.map(열쇠));
   const 열것 = 전.elements.filter((e) => {
     // `??` 는 빈 글자를 그냥 통과시킵니다. `name` 이 빈 글자면 `text` 를 봐야 하므로 `||` 를 씁니다.
     // (이것 때문에 `<a>메뉴토글</a>` 18개를 하나도 못 찾았습니다 — 2026-08-03)
@@ -242,15 +255,34 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
   });
   console.log(`   눌러서 열 것 ${열것.length}개`);
 
+  /**
+   * 몇 번째 것을 누를지 **순번으로** 셉니다. 처음에 받은 `ref` 를 그대로 쓰면 안 됩니다.
+   *
+   * 왜: 묶음 하나를 펴면 그 아래 것들이 전부 밀려납니다. 그러면 처음에 받아둔 `ref` 는
+   * **이미 다른 것을 가리키거나 사라진 상태**가 됩니다. 그 상태로 누르면 플레이라이트가
+   * "요소가 멈출 때까지" 기다리다 15초 만에 죽습니다(2026-08-03 실측: 19개 중 11개가 이렇게 죽었습니다).
+   * 그래서 **누르기 직전에 화면을 다시 읽고, 같은 글자의 n번째**를 골라 누릅니다.
+   */
+  const 열것글자 = 열것.map((e) => (e.name || e.text || '').trim());
   let 팝업번호 = 0;
-  for (const 버튼 of 열것) {
-    const 글 = (버튼.name || 버튼.text || '').trim();
+
+  for (const [순번, 글] of 열것글자.entries()) {
     try {
+      // 지금 화면에서 같은 글자를 가진 것들을 다시 세고, 그중 순번째를 누릅니다.
+      const 지금 = await call('snapshot', { limit: 600 });
+      const 같은글자 = 지금.elements.filter((e) => (e.name || e.text || '').trim() === 글);
+      const 몇번째 = 열것글자.slice(0, 순번).filter((x) => x === 글).length;
+      const 버튼 = 같은글자[몇번째];
+      if (!버튼) {
+        console.log(`     "${글}" — 화면에서 사라졌습니다(앞의 것을 펴면서 바뀐 듯합니다)`);
+        continue;
+      }
+
       await call('click', { ref: 버튼.ref, closePopups: false });
       await sleep(2500);
 
       const 후 = await call('snapshot', { limit: 600 });
-      const 새것 = 후.elements.filter((e) => !전ref.has(e.ref));
+      const 새것 = 후.elements.filter((e) => !전열쇠.has(열쇠(e)));
       if (!새것.length) {
         console.log(`     "${글}" — 새로 나온 것 없음(펼침이 아니었거나 이미 열려 있었습니다)`);
         continue;
