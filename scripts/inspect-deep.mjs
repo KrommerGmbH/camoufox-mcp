@@ -24,10 +24,26 @@
  */
 const PORT = process.env.CAMOUFOX_PORT ?? 8787;
 
-async function call(op, args = {}) {
-  const res = await fetch(`http://localhost:${PORT}/call`, { method: 'POST', body: JSON.stringify({ op, ...args }) });
+/**
+ * 조종 서버에 명령 하나를 보냅니다.
+ *
+ * **한 번 더 시도합니다.** 무거운 화면(입력칸 73개짜리 팝업)을 기록할 때 연결이 끊겨
+ * `TypeError: fetch failed` 가 나는 일이 있습니다(2026-08-03 실측: 5개 중 3개가 이걸로 죽었습니다).
+ * 서버는 멀쩡한데 연결만 끊긴 것이라, 잠깐 쉬었다 다시 부르면 됩니다.
+ */
+async function call(op, args = {}, 남은시도 = 2) {
+  let res;
+  try {
+    res = await fetch(`http://localhost:${PORT}/call`, { method: 'POST', body: JSON.stringify({ op, ...args }) });
+  } catch (e) {
+    if (남은시도 <= 1) throw new Error(`${op}: 조종 서버에 못 닿았습니다 — ${String(e).split('\n')[0]}`);
+    await sleep(3000);
+
+    return call(op, args, 남은시도 - 1);
+  }
   const j = await res.json();
   if (j.error) throw new Error(`${op}: ${j.error}`);
+
   return j;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -240,6 +256,10 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
     console.log(`   상세 기록: 요소 ${d.elements} · 입력칸 ${d.fields} · API ${d.apis}`);
   }
 
+  // 누르기 전에 **화면을 덮은 알림창부터 치웁니다.** 덮여 있으면 클릭이 조용히 빗나갑니다.
+  const 첫정리 = await call('popups').catch(() => ({ found: 0 }));
+  if (첫정리.found) console.log(`   알림창 ${첫정리.found}개를 먼저 치웠습니다`);
+
   // 상세 화면에 있는 "여는 버튼"을 하나씩 눌러 봅니다.
   const 전 = await call('snapshot', { limit: 600 });
   const 전열쇠 = new Set(전.elements.map(열쇠));
@@ -265,6 +285,8 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
    */
   const 열것글자 = 열것.map((e) => (e.name || e.text || '').trim());
   let 팝업번호 = 0;
+  /** 지금 열려 있는 창 개수. 이보다 늘면 누르기가 새 창을 연 것입니다. */
+  const 창수 = ((await call('pages')).pages ?? []).length;
 
   for (const [순번, 글] of 열것글자.entries()) {
     try {
@@ -281,8 +303,39 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
       await call('click', { ref: 버튼.ref, closePopups: false });
       await sleep(2500);
 
-      const 후 = await call('snapshot', { limit: 600 });
-      const 새것 = 후.elements.filter((e) => !전열쇠.has(열쇠(e)));
+      // 누르면 **새 창이 열리는 것**이 있습니다(안전 규정·이용약관 안내 등).
+      // 새 창이 열린 채로 두면 그 다음 조사가 엉뚱한 창을 보게 됩니다. 닫고 원래 창으로 돌아옵니다.
+      const 창들 = (await call('pages')).pages ?? [];
+      if (창들.length > 창수) {
+        for (let i = 창들.length - 1; i >= 창수; i--) await call('closePage', { index: i }).catch(() => {});
+        await call('usePage', { index: 0 }).catch(() => {});
+        await sleep(1000);
+        console.log(`     "${글}" — 새 창이 열려서 닫았습니다`);
+      }
+
+      let 후 = await call('snapshot', { limit: 600 });
+      let 새것 = 후.elements.filter((e) => !전열쇠.has(열쇠(e)));
+
+      // **눌렀으면 무엇이 달라졌는지 확인합니다.** 아무것도 안 달라졌으면 두 가지 중 하나입니다.
+      //   ① 그냥 펼침이 아니었다  ② **무엇이 화면을 덮고 있어서 클릭이 빗나갔다**
+      // ②는 조용히 틀립니다. 그래서 덮은 것이 있는지 보고, 있으면 치우고 **한 번 더** 눌러 봅니다.
+      // (실측 2026-08-03: "이번달 등급 안내" 모달이 화면 전체 2560×930 을 덮고 있었는데
+      //  오류는 "연결 실패"로 나와서 원인을 엉뚱한 곳에서 찾았습니다.)
+      if (!새것.length) {
+        const 덮은것 = await call('popups').catch(() => ({ found: 0 }));
+        if (덮은것.found) {
+          console.log(`     "${글}" — 화면을 덮은 알림창 ${덮은것.found}개를 치우고 다시 누릅니다`);
+          const 다시 = await call('snapshot', { limit: 600 });
+          const 다시버튼 = 다시.elements.filter((e) => (e.name || e.text || '').trim() === 글)[몇번째];
+          if (다시버튼) {
+            await call('click', { ref: 다시버튼.ref, closePopups: false });
+            await sleep(2500);
+            후 = await call('snapshot', { limit: 600 });
+            새것 = 후.elements.filter((e) => !전열쇠.has(열쇠(e)));
+          }
+        }
+      }
+
       if (!새것.length) {
         console.log(`     "${글}" — 새로 나온 것 없음(펼침이 아니었거나 이미 열려 있었습니다)`);
         continue;

@@ -11,8 +11,18 @@ import type { BrowserContext, Locator, Page } from 'playwright-core';
  */
 const DONT_SHOW_INPUT = 'input[name="again"], input[name="todayClose"], input[name="notToday"]';
 
-/** 팝업 상자. 안쪽 작은 상자를 팝업으로 착각하지 않으려고 명시합니다. */
-const BOX = '[role="dialog"], .modal-content, .layer_popup, .seller-layer-modal';
+/**
+ * 팝업 상자. 안쪽 작은 상자를 팝업으로 착각하지 않으려고 명시합니다.
+ *
+ * `[class*="Modal-module"]` 를 넣은 이유 (2026-08-03 실측):
+ * 네이버 안에 얹힌 남의 앱(등록 정보 검토 등)은 CSS Module 을 써서 class 가
+ * `Modal-module__modal___l8i-r` 처럼 **뒤에 빌드 해시가 붙습니다.** 해시는 배포마다 바뀌지만
+ * **앞의 `Modal-module` 은 파일 이름에서 오는 것이라 안 바뀝니다.**
+ * 이게 빠져 있어서 "이번달 등급 안내" 모달을 **못 보고 그냥 지나쳤고**, 화면 전체(2560×930)를
+ * 덮은 채로 조사가 돌아 클릭이 전부 빗나갔습니다. 그런데 오류는 "연결 실패"로 나와서
+ * 원인을 엉뚱한 곳에서 찾았습니다.
+ */
+const BOX = '[role="dialog"], .modal-content, .layer_popup, .seller-layer-modal, [class*="Modal-module"]';
 
 /**
  * 닫기 버튼.
