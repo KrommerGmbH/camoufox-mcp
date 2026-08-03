@@ -78,9 +78,12 @@ const 닫는버튼 = ['취소', '닫기', '모달 닫기', '뒤로'];
 /** 절대 안 누르는 글자. 실수로 여는버튼 목록에 들어가도 여기서 한 번 더 막습니다. */
 const 금지버튼 = ['저장', '삭제', '발송', '전송', '확인', '적용', '결제', '주문', '승인', '반영'];
 
-const [, , 화면키, 목록주소, 상세주소틀, 행수인자, 칸이름인자] = process.argv;
+/** `--조회=조회` 처럼 주면, 목록을 연 뒤 그 글자의 버튼을 한 번 누릅니다(조회는 읽기만 합니다). */
+const 조회글자 = process.argv.find((a) => a.startsWith('--조회='))?.split('=')[1] ?? null;
+
+const [, , 화면키, 목록주소, 상세주소틀, 행수인자, 칸이름인자] = process.argv.filter((a) => !a.startsWith('--'));
 if (!화면키 || !목록주소) {
-  console.error('사용법: node scripts/inspect-deep.mjs <화면키> <목록주소> [상세주소틀] [행수] [번호칸이름]');
+  console.error('사용법: node scripts/inspect-deep.mjs <화면키> <목록주소> [상세주소틀] [행수] [번호칸이름] [--조회=조회]');
   process.exit(1);
 }
 const 행수 = Number(행수인자 ?? 2);
@@ -93,7 +96,7 @@ const 잡음 = /\.(svg|png|jpe?g|gif|woff2?|css|js)(\?|$)|facebook|pstatic\.net\
  * 이것들도 줄이 여러 개라서 안 빼면 **그 화면의 목록으로 잘못 고릅니다.**
  * (실측 2026-08-03: 상품목록 화면에서 알림 10줄을 목록으로 착각해 조사가 통째로 헛돌았습니다.)
  */
-const 곁들이 = /notification|user-activities|popup-notice|\/api\/context|shared\/codes|dock\/|badges|i18n|jwt|dns-is-safe/i;
+const 곁들이 = /notification|user-activities|popup-notice|\/api\/context|shared\/codes|dock\/|badges|i18n|jwt|dns-is-safe|for-resource-menu|menus\/toggles|front-history/i;
 
 /**
  * **목록의 줄이 들어 있는 응답을 찾습니다.**
@@ -143,11 +146,21 @@ function 쪽나눔인가(본문) {
   return 수 >= 2;
 }
 
+/**
+ * 사람에 대한 칸. **번호 후보에서 뺍니다.**
+ *
+ * 두 가지를 한 번에 막습니다.
+ *  ① 개인정보가 화면(로그)에 찍히는 것 — 실측: `orderMemberTelNo=010-****-****` 가 후보로 찍혔습니다.
+ *  ② 전화번호·회원번호를 주소에 끼워 넣는 것 — 그건 그 화면이 받는 번호가 아닙니다.
+ */
+const 사람칸 = /(tel|phone|mobile|hp|cell|name|nm|addr|zip|post|mail|member|customer|buyer|orderer|receiver|birth)/i;
+
 /** 한 줄에서 "번호로 쓸 만한 칸"을 고릅니다. 이름을 찍지 않고 **모양으로** 고릅니다. */
 function 번호칸들(줄) {
   return Object.entries(줄)
     .filter(([k, v]) => {
       if (v === null || typeof v === 'object') return false;
+      if (사람칸.test(k)) return false;
       const s = String(v);
       // 6자리 이상 숫자이거나, 이름에 No/Id/Seq 가 붙은 칸.
       return /^\d{6,}$/.test(s) || /(no|id|seq)$/i.test(k);
@@ -188,6 +201,24 @@ await call('netclear');
 await call('goto', { url: 목록주소 });
 await sleep(7000);
 
+// 화면을 열기만 해서는 **줄이 안 오는 화면**이 있습니다.
+// 실측 2026-08-03: `판매관리 > 발주(주문)확인/발송관리` 는 열어도 `getGraphqlServerTime` 하나만 오고
+// 주문 줄은 **조회를 눌러야** 옵니다. 그래서 `--조회=조회` 처럼 누를 글자를 줄 수 있게 했습니다.
+//
+// 조회는 **읽기만 하는 버튼**이라 눌러도 안전합니다(저장·발송·삭제는 여전히 금지버튼입니다).
+// 여는버튼 목록에 안 넣은 이유는 따로 있습니다 — 팝업을 여는 버튼이 아니라 화면을 갈아치우는 버튼이라,
+// 팝업 조사 중에 누르면 조사가 통째로 헛돕니다.
+if (조회글자) {
+  console.log(`   목록을 부르려고 "${조회글자}" 를 누릅니다.`);
+  const 지금 = await call('snapshot', { interactive: true });
+  const 대상 = (지금.elements ?? []).find((e) => (e.name || e.text || '').trim() === 조회글자);
+  if (!대상) console.log(`   ⚠️ "${조회글자}" 버튼을 화면에서 못 찾았습니다. 그냥 갑니다.`);
+  else {
+    await call('click', { ref: 대상.ref }).catch((e) => console.log(`   ⚠️ 못 눌렀습니다: ${String(e).split('\n')[0]}`));
+    await sleep(6000);
+  }
+}
+
 const 응답들 = (await call('netlist')).filter(
   (e) => !잡음.test(e.url) && !곁들이.test(e.url) && e.status === 200 && (e.bytes ?? 0) > 200,
 );
@@ -221,6 +252,22 @@ await call('dump', { menuKey: 화면키, menuPath: `깊이조사 > ${화면키} 
 // ── ② 상세 화면 + 눌러야 열리는 것 ───────────────────────────────────────
 if (!상세주소틀 || !목록) {
   console.log('\n상세 주소틀이 없어 여기까지 합니다.');
+  await call('save').catch(() => {});
+  process.exit(0);
+}
+
+// **쪽 나눔이 없으면 상세로 안 들어갑니다.**
+//
+// 실측 2026-08-03: 발주확인/발송관리 화면에서 주문 줄이 안 왔는데(검색을 눌러야 옵니다),
+// 그 화면에 같이 온 **공지 3줄**(`/sellers/tasks/exposure-infos`)을 목록으로 골랐습니다.
+// 거기서 꺼낸 공지 번호 `sellerTaskId=45` 를 주문 상세 주소에 끼워 넣어
+// `…/manage/order/popup/45/productOrderDetail` 로 들어갔고, 네이버가 **403(권한 없음)** 을 줬습니다.
+//
+// 목록이 아닌 것을 목록으로 잘못 골랐을 때 **남의 번호로 남의 화면에 들어가는 것**이 제일 위험합니다.
+// 진짜 목록은 쪽이 나뉘어 있습니다(공리 1). 쪽 나눔이 없으면 목록으로 보지 않고 여기서 멈춥니다.
+if (!목록.쪽나눔) {
+  console.log('\n✗ 고른 응답에 쪽 나눔이 없습니다. 그 화면의 목록이 아닐 수 있어 상세로 들어가지 않습니다.');
+  console.log('   목록이 아직 안 왔을 수 있습니다 — 조회/검색을 눌러야 오는 화면이면 `--조회=검색` 처럼 주세요.');
   await call('save').catch(() => {});
   process.exit(0);
 }
