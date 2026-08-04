@@ -3,6 +3,7 @@ import { closeBrowser, closePage, current, goTo, listPages, openBrowser, saveNow
 import { outDir, writeDump } from './dump.js';
 import { extractFromHtml } from './extract.js';
 import { assertWebUrl } from './guard.js';
+import { login } from './login.js';
 import { closeLayerPopups } from './popup.js';
 import { contentTarget, snapshotBoth, targetForRef } from './frame.js';
 import { byRef, snapshot } from './snapshot.js';
@@ -58,6 +59,23 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
     // 새 주소로 갈 때마다 알림창을 정리합니다. 끄려면 closePopups:false.
     const popups = a.closePopups === false ? null : await closeLayerPopups(page);
     return { url: page.url(), title: await page.title(), popups };
+  },
+
+  /**
+   * 마켓에 로그인합니다. **비밀번호는 여기(이 프로세스)만 봅니다.**
+   *
+   * MCP 쪽 `browser_login` 과 **똑같은 함수**를 부릅니다. 로그인 순서는 코드가 아니라
+   * 표(`cmh_ai_platform.login_flow`)에 있으므로 마켓이 늘어도 이 곳은 안 고칩니다.
+   *
+   * 왜 조종 서버에도 필요한가: 조사(`inspect-deep.mjs`)는 이 서버에만 명령을 보냅니다.
+   * 여기에 로그인이 없으면 세션이 만료됐을 때 **사람이 손으로 로그인할 때까지 조사가 멈춥니다**
+   * (2026-08-04 실측: 쿠키가 22시간 만에 만료되어 여섯 화면 조사가 통째로 멈췄습니다).
+   *
+   * 필요한 환경변수: `SHOPWARE_API_URL` · `SHOPWARE_API_CLIENT_ID` · `SHOPWARE_API_CLIENT_SECRET`
+   */
+  async login(a) {
+    const { page, context } = current();
+    return login(page, context, String(a.market ?? 'naver_smartstore'));
   },
 
   async popups(a) {
