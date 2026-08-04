@@ -81,6 +81,9 @@ const 금지버튼 = ['저장', '삭제', '발송', '전송', '확인', '적용'
 /** `--조회=조회` 처럼 주면, 목록을 연 뒤 그 글자의 버튼을 한 번 누릅니다(조회는 읽기만 합니다). */
 const 조회글자 = process.argv.find((a) => a.startsWith('--조회='))?.split('=')[1] ?? null;
 
+/** `--팝업` 을 주면 **목록 화면에서도** 여는 버튼을 눌러 봅니다(상세가 없는 화면은 이것뿐입니다). */
+const 팝업모드 = process.argv.includes('--팝업');
+
 const [, , 화면키, 목록주소, 상세주소틀, 행수인자, 칸이름인자] = process.argv.filter((a) => !a.startsWith('--'));
 if (!화면키 || !목록주소) {
   console.error('사용법: node scripts/inspect-deep.mjs <화면키> <목록주소> [상세주소틀] [행수] [번호칸이름] [--조회=조회]');
@@ -249,65 +252,22 @@ if (!목록) {
 
 await call('dump', { menuKey: 화면키, menuPath: `깊이조사 > ${화면키} > 목록`, note: 목록 ? `목록 응답 ${목록.url}` : '목록 응답 못 찾음' });
 
-// ── ② 상세 화면 + 눌러야 열리는 것 ───────────────────────────────────────
-if (!상세주소틀 || !목록) {
-  console.log('\n상세 주소틀이 없어 여기까지 합니다.');
-  await call('save').catch(() => {});
-  process.exit(0);
-}
-
-// **쪽 나눔이 없으면 상세로 안 들어갑니다.**
-//
-// 실측 2026-08-03: 발주확인/발송관리 화면에서 주문 줄이 안 왔는데(검색을 눌러야 옵니다),
-// 그 화면에 같이 온 **공지 3줄**(`/sellers/tasks/exposure-infos`)을 목록으로 골랐습니다.
-// 거기서 꺼낸 공지 번호 `sellerTaskId=45` 를 주문 상세 주소에 끼워 넣어
-// `…/manage/order/popup/45/productOrderDetail` 로 들어갔고, 네이버가 **403(권한 없음)** 을 줬습니다.
-//
-// 목록이 아닌 것을 목록으로 잘못 골랐을 때 **남의 번호로 남의 화면에 들어가는 것**이 제일 위험합니다.
-// 진짜 목록은 쪽이 나뉘어 있습니다(공리 1). 쪽 나눔이 없으면 목록으로 보지 않고 여기서 멈춥니다.
-if (!목록.쪽나눔) {
-  console.log('\n✗ 고른 응답에 쪽 나눔이 없습니다. 그 화면의 목록이 아닐 수 있어 상세로 들어가지 않습니다.');
-  console.log('   목록이 아직 안 왔을 수 있습니다 — 조회/검색을 눌러야 오는 화면이면 `--조회=검색` 처럼 주세요.');
-  await call('save').catch(() => {});
-  process.exit(0);
-}
-
-// 주소틀의 `{id}` 자리에 넣을 칸을 고릅니다. 주소틀에 칸 이름이 적혀 있으면 그것을 씁니다.
-// 예: `?channelProductNo={id}` → 줄에서 `channelProductNo` 를 찾습니다.
-// 칸 이름을 직접 준 경우가 가장 셉니다. **주소마다 받는 번호가 다르기 때문입니다.**
-// (네이버 실측: 진단 화면은 `channelProductNo`, 상품수정 화면은 `id`(editId) 를 받습니다. 서로 다른 번호입니다.)
-const 틀에적힌칸 = 상세주소틀.match(/[?&]([A-Za-z]\w*)=\{id\}/)?.[1];
-const 고른칸 =
-  (칸이름인자 && 목록.줄[0][칸이름인자] !== undefined && 칸이름인자) ||
-  (틀에적힌칸 && 목록.줄[0][틀에적힌칸] !== undefined && 틀에적힌칸) ||
-  번호칸들(목록.줄[0])[0]?.[0] ||
-  null;
-if (!고른칸) {
-  console.log('\n✗ 줄에서 번호로 쓸 칸을 못 찾았습니다.');
-  process.exit(1);
-}
-console.log(`\n② 상세 화면 — 주소에 넣을 칸: ${고른칸}`);
-
-for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
-  const id = String(줄[고른칸]);
-  const 이름 = 이름칸(줄) ?? '';
-  console.log(`\n[${i + 1}/${행수}] ${고른칸}=${id}  ${이름.slice(0, 40)}`);
-
-  await call('netclear');
-  await call('goto', { url: 상세주소틀.replace('{id}', id) });
-  await sleep(5000);
-
-  const 상세키 = `${화면키}-detail`;
-  if (i === 0) {
-    const d = await call('dump', { menuKey: 상세키, menuPath: `깊이조사 > ${화면키} > 상세`, note: `${고른칸}=${id}` });
-    console.log(`   상세 기록: 요소 ${d.elements} · 입력칸 ${d.fields} · API ${d.apis}`);
-  }
-
+/**
+ * **지금 열려 있는 화면에서 "여는 버튼"을 하나씩 눌러 보고, 새로 나온 것을 기록합니다.**
+ *
+ * 상세 화면에서도, 목록 화면에서도 씁니다. 목록 화면에도 눌러야 열리는 것이 많습니다
+ * (문의 답변창 · 취소 처리창 · 조회항목 설정 등). 전에는 상세 화면에서만 해서 그걸 다 놓쳤습니다.
+ *
+ * @param 팝업접두   팝업 화면 이름 앞에 붙일 것 (예: `03-04-menu-04` · `03-04-menu-04-detail`)
+ * @param 자리이름   기록에 남길 자리 (`목록` · `상세`)
+ * @param 돌아갈주소 닫는 버튼이 없을 때 화면을 되돌리려고 다시 열 주소
+ * @param 메모       기록에 남길 한 줄
+ */
+async function 팝업조사(팝업접두, 자리이름, 돌아갈주소, 메모) {
   // 누르기 전에 **화면을 덮은 알림창부터 치웁니다.** 덮여 있으면 클릭이 조용히 빗나갑니다.
   const 첫정리 = await call('popups').catch(() => ({ found: 0 }));
   if (첫정리.found) console.log(`   알림창 ${첫정리.found}개를 먼저 치웠습니다`);
 
-  // 상세 화면에 있는 "여는 버튼"을 하나씩 눌러 봅니다.
   const 전 = await call('snapshot', { limit: 600 });
   const 전열쇠 = new Set(전.elements.map(열쇠));
   const 열것 = 전.elements.filter((e) => {
@@ -389,11 +349,11 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
       }
 
       팝업번호++;
-      const 팝업키 = `${화면키}-detail-popup-${String(팝업번호).padStart(2, '0')}`;
-      const d = await call('dump', {
+      const 팝업키 = `${팝업접두}-popup-${String(팝업번호).padStart(2, '0')}`;
+      await call('dump', {
         menuKey: 팝업키,
-        menuPath: `깊이조사 > ${화면키} > 상세 > "${글}" 눌러서 열린 것`,
-        note: `${고른칸}=${id} · 새로 나온 요소 ${새것.length}개`,
+        menuPath: `깊이조사 > ${화면키} > ${자리이름} > "${글}" 눌러서 열린 것`,
+        note: `${메모} · 새로 나온 요소 ${새것.length}개`,
       });
       const 입력 = 새것.filter((e) => e.tag === 'input' || e.tag === 'textarea' || e.tag === 'select');
       console.log(
@@ -408,13 +368,78 @@ for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
         await sleep(1500);
       } else {
         // 닫는 버튼이 없으면 화면을 다시 읽어서 원래대로 돌립니다(저장 위험 없음).
-        await call('goto', { url: 상세주소틀.replace('{id}', id) });
+        await call('goto', { url: 돌아갈주소 });
         await sleep(4000);
       }
     } catch (e) {
       console.log(`     "${글}" — ✗ ${String(e).split('\n')[0]}`);
     }
   }
+}
+
+// ── ①-2 목록 화면에서 눌러야 열리는 것 ────────────────────────────────────
+// 목록 화면에도 팝업이 많습니다(문의 답변창·취소 처리창·조회항목 설정 등).
+// 상세 주소틀이 없는 화면은 여기가 유일한 깊이 조사입니다.
+if (팝업모드) {
+  console.log('\n①-2 목록 화면에서 눌러 봅니다');
+  await 팝업조사(화면키, '목록', 목록주소, '목록 화면');
+}
+
+// ── ② 상세 화면 + 눌러야 열리는 것 ───────────────────────────────────────
+if (!상세주소틀 || !목록) {
+  console.log('\n상세 주소틀이 없어 여기까지 합니다.');
+  await call('save').catch(() => {});
+  process.exit(0);
+}
+
+// **쪽 나눔이 없으면 상세로 안 들어갑니다.**
+//
+// 실측 2026-08-03: 발주확인/발송관리 화면에서 주문 줄이 안 왔는데(검색을 눌러야 옵니다),
+// 그 화면에 같이 온 **공지 3줄**(`/sellers/tasks/exposure-infos`)을 목록으로 골랐습니다.
+// 거기서 꺼낸 공지 번호 `sellerTaskId=45` 를 주문 상세 주소에 끼워 넣어
+// `…/manage/order/popup/45/productOrderDetail` 로 들어갔고, 네이버가 **403(권한 없음)** 을 줬습니다.
+//
+// 목록이 아닌 것을 목록으로 잘못 골랐을 때 **남의 번호로 남의 화면에 들어가는 것**이 제일 위험합니다.
+// 진짜 목록은 쪽이 나뉘어 있습니다(공리 1). 쪽 나눔이 없으면 목록으로 보지 않고 여기서 멈춥니다.
+if (!목록.쪽나눔) {
+  console.log('\n✗ 고른 응답에 쪽 나눔이 없습니다. 그 화면의 목록이 아닐 수 있어 상세로 들어가지 않습니다.');
+  console.log('   목록이 아직 안 왔을 수 있습니다 — 조회/검색을 눌러야 오는 화면이면 `--조회=검색` 처럼 주세요.');
+  await call('save').catch(() => {});
+  process.exit(0);
+}
+
+// 주소틀의 `{id}` 자리에 넣을 칸을 고릅니다. 주소틀에 칸 이름이 적혀 있으면 그것을 씁니다.
+// 예: `?channelProductNo={id}` → 줄에서 `channelProductNo` 를 찾습니다.
+// 칸 이름을 직접 준 경우가 가장 셉니다. **주소마다 받는 번호가 다르기 때문입니다.**
+// (네이버 실측: 진단 화면은 `channelProductNo`, 상품수정 화면은 `id`(editId) 를 받습니다. 서로 다른 번호입니다.)
+const 틀에적힌칸 = 상세주소틀.match(/[?&]([A-Za-z]\w*)=\{id\}/)?.[1];
+const 고른칸 =
+  (칸이름인자 && 목록.줄[0][칸이름인자] !== undefined && 칸이름인자) ||
+  (틀에적힌칸 && 목록.줄[0][틀에적힌칸] !== undefined && 틀에적힌칸) ||
+  번호칸들(목록.줄[0])[0]?.[0] ||
+  null;
+if (!고른칸) {
+  console.log('\n✗ 줄에서 번호로 쓸 칸을 못 찾았습니다.');
+  process.exit(1);
+}
+console.log(`\n② 상세 화면 — 주소에 넣을 칸: ${고른칸}`);
+
+for (const [i, 줄] of 목록.줄.slice(0, 행수).entries()) {
+  const id = String(줄[고른칸]);
+  const 이름 = 이름칸(줄) ?? '';
+  console.log(`\n[${i + 1}/${행수}] ${고른칸}=${id}  ${이름.slice(0, 40)}`);
+
+  await call('netclear');
+  await call('goto', { url: 상세주소틀.replace('{id}', id) });
+  await sleep(5000);
+
+  const 상세키 = `${화면키}-detail`;
+  if (i === 0) {
+    const d = await call('dump', { menuKey: 상세키, menuPath: `깊이조사 > ${화면키} > 상세`, note: `${고른칸}=${id}` });
+    console.log(`   상세 기록: 요소 ${d.elements} · 입력칸 ${d.fields} · API ${d.apis}`);
+  }
+
+  await 팝업조사(상세키, '상세', 상세주소틀.replace('{id}', id), `${고른칸}=${id}`);
 }
 
 await call('save').catch(() => {});
