@@ -37,6 +37,10 @@ export interface ApiResult {
   data?: unknown;
   /** 본문이 커서 안 보낸 경우의 크기(바이트) */
   크기?: number;
+  /** 서버가 이 답을 만든 시각(응답 머리글 `date`). 묵은 값인지 가릴 때 씁니다. */
+  받은시각?: string;
+  /** 중간에 저장돼 있던 초(`age`). 있으면 어딘가에 얹혀 있던 답입니다. */
+  얹혀있던초?: number;
   이유?: string;
 }
 
@@ -72,7 +76,7 @@ async function fetchInPage(
   url: string,
   method: string,
   body: unknown,
-): Promise<{ status: number; text: string }> {
+): Promise<{ status: number; text: string; when: string; age: string }> {
   try {
     return await page.evaluate(
       async ({ u, m, b }) => {
@@ -96,7 +100,15 @@ async function fetchInPage(
           },
           body: b === undefined ? undefined : JSON.stringify(b),
         });
-        return { status: res.status, text: await res.text() };
+        return {
+          status: res.status,
+          text: await res.text(),
+          // **서버가 이 답을 만든 시각.** 값이 언제 것인지 사람이 알아야 합니다.
+          // 캐시에서 나온 답이면 이 시각이 **안 움직입니다** — 그것으로 묵은 값을 가려냅니다.
+          when: res.headers.get('date') ?? '',
+          // 중간에 저장돼 있던 초. 0 이 아니면 어딘가에 얹혀 있던 답입니다.
+          age: res.headers.get('age') ?? '',
+        };
       },
       { u: url, m: method, b: body },
     );
@@ -147,9 +159,19 @@ function shrink(data: unknown, pick?: string[]): Pick<ApiResult, 'data' | '크�
 
 export async function apiCall(page: Page, q: ApiCall): Promise<ApiResult> {
   const method = (q.method ?? 'GET').toUpperCase();
-  const { status, text } = await fetchInPage(page, q.url, method, q.body);
+  const { status, text, when, age } = await fetchInPage(page, q.url, method, q.body);
   const data = parse(text);
-  return { ok: status >= 200 && status < 300, status, url: q.url, ...shrink(data, q.pick) };
+
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    url: q.url,
+    // **이 답이 언제 만들어진 것인지.** 값을 사람에게 보여줄 때 같이 적습니다.
+    // 캐시에서 나왔으면 이 시각이 안 움직입니다(그래서 묵은 값을 가려낼 수 있습니다).
+    받은시각: when || undefined,
+    ...(age && age !== '0' ? { 얹혀있던초: Number(age) } : {}),
+    ...shrink(data, q.pick),
+  };
 }
 
 export interface ApiPatch {

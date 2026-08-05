@@ -8,6 +8,17 @@ export interface NetEntry {
   contentType: string;
   bytes: number;
   at: number;
+  /**
+   * 이 답을 **서버가 만든 시각**(`date`)과 **얹혀 있던 초**(`age`),
+   * 그리고 **저장해도 되는가**(`cache-control`).
+   *
+   * 왜 담나 (2026-08-05): 대시보드 값이 묵은 것으로 보였는데, 그것이 브라우저가 저장해 둔
+   * 답이어서인지 아니면 그 사이에 진짜로 바뀐 것인지 **가릴 방법이 없었습니다.**
+   * 이 세 가지가 있으면 바로 가려집니다.
+   */
+  when?: string;
+  age?: string;
+  cacheControl?: string;
   /** JSON 응답만, 그리고 너무 크지 않을 때만 담습니다. */
   body?: unknown;
   bodyError?: string;
@@ -49,7 +60,8 @@ export class NetworkRecorder {
   private async record(res: Response): Promise<void> {
     const req = res.request();
     const type = req.resourceType();
-    const contentType = (res.headers()['content-type'] ?? '').toLowerCase();
+    const h = res.headers();
+    const contentType = (h['content-type'] ?? '').toLowerCase();
     const isJson = contentType.includes('json');
 
     // 화면 데이터는 xhr/fetch 로 옵니다. 이미지·CSS 는 버립니다.
@@ -63,6 +75,9 @@ export class NetworkRecorder {
       contentType,
       bytes: 0,
       at: Date.now(),
+      when: h['date'],
+      age: h['age'],
+      cacheControl: h['cache-control'],
     };
 
     if (isJson) {
