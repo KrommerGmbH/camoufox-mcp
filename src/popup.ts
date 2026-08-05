@@ -110,8 +110,18 @@ export async function closeLayerPopups(page: Page, opt: PopupOptions = {}): Prom
 
   for (let round = 0; round < 6; round++) {
     // 체크박스를 감싼 라벨을 찾습니다. 체크박스 자체는 클릭을 안 받습니다.
-    const label = await firstVisible(page, `label:has(${inputSel})`);
-    const box = label ? null : await firstVisible(page, boxSel);
+    let label = await firstVisible(page, `label:has(${inputSel})`);
+    let box = label ? null : await firstVisible(page, boxSel);
+
+    // **팝업은 한꺼번에 안 뜹니다.** 하나를 닫으면 다음 것이 **조금 뒤에** 그려집니다
+    // (대시보드 실측 2026-08-04: 공지 → 등급 안내 → 통신판매업 안내 순으로 이어서 떴습니다).
+    // 바로 "없다"고 끝내면 뒤따라 오는 것을 그대로 두고 나갑니다. 그러면 그 다음 클릭이 전부 빗나갑니다.
+    // 그래서 **한 번은 기다렸다 다시 봅니다.**
+    if (!label && !box) {
+      await page.waitForTimeout(1_500);
+      label = await firstVisible(page, `label:has(${inputSel})`);
+      box = label ? null : await firstVisible(page, boxSel);
+    }
     if (!label && !box) break;
 
     report.found++;
