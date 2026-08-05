@@ -79,7 +79,21 @@ async function fetchInPage(
         const res = await fetch(u, {
           method: m,
           credentials: 'include',
-          headers: b === undefined ? {} : { 'Content-Type': 'application/json' },
+          // **묵은 값을 받지 않습니다.**
+          //
+          // 왜 (2026-08-05 실측): 대시보드 값을 받아 봤더니 **30분 전 값**이었습니다.
+          // 브라우저가 저장해 둔 응답을 그대로 내준 것입니다(서버에 물어보지도 않음).
+          // 판매 건수·정산 금액처럼 **자꾸 바뀌는 값**을 묵은 것으로 답하면
+          // 사람이 그 값을 믿고 잘못된 결정을 합니다. 화면 새로고침보다 이게 확실합니다.
+          //
+          //  - `cache: 'no-store'` — 저장된 것을 쓰지도, 새로 저장하지도 않습니다.
+          //  - `Cache-Control: no-cache` — 중간 서버(프록시)도 새로 받아오게 합니다.
+          cache: 'no-store',
+          headers: {
+            'Cache-Control': 'no-cache',
+            Pragma: 'no-cache',
+            ...(b === undefined ? {} : { 'Content-Type': 'application/json' }),
+          },
           body: b === undefined ? undefined : JSON.stringify(b),
         });
         return { status: res.status, text: await res.text() };

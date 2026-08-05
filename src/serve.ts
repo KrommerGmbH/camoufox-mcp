@@ -3,6 +3,7 @@ import { closeBrowser, closePage, current, goTo, listPages, openBrowser, saveNow
 import { outDir, writeDump } from './dump.js';
 import { extractFromHtml } from './extract.js';
 import { assertWebUrl } from './guard.js';
+import { apiCall } from './api.js';
 import { login } from './login.js';
 import { closeLayerPopups } from './popup.js';
 import { contentTarget, snapshotBoth, targetForRef } from './frame.js';
@@ -76,6 +77,17 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   async login(a) {
     const { page, context } = current();
     return login(page, context, String(a.market ?? 'naver_smartstore'));
+  },
+
+  /**
+   * 화면 안에서 그 사이트의 API 를 직접 부릅니다. **묵은 값을 안 받습니다**(api.ts 의 no-store 설명 참고).
+   *
+   * 값이 필요할 때는 화면을 새로 그리는 것보다 이게 낫습니다 — 빠르고, 안 깨지고,
+   * 무엇보다 **화면이 캐시로 그린 옛 숫자**가 아니라 지금 서버가 아는 숫자를 받습니다.
+   */
+  async api(a) {
+    const { page } = current();
+    return apiCall(page, { url: String(a.url), method: a.method, body: a.body, pick: a.pick });
   },
 
   async popups(a) {
