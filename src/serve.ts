@@ -6,7 +6,7 @@ import { assertWebUrl } from './guard.js';
 import { apiCall } from './api.js';
 import { login } from './login.js';
 import { closeLayerPopups } from './popup.js';
-import { contentTarget, snapshotBoth, targetForRef } from './frame.js';
+import { contentTarget, findBoth, snapshotBoth, targetForRef } from './frame.js';
 import { byRef, snapshot } from './snapshot.js';
 
 /**
@@ -100,11 +100,14 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   },
 
   /** 선택자로 바로 클릭. 진단용 + 정확한 선택자를 이미 아는 경우용. */
+  /**
+   * 선택자로 누릅니다. **바깥 문서와 iframe 안쪽을 둘 다 찾습니다.**
+   * 네이버 판매관리 화면은 내용이 통째로 iframe 안이라, 바깥만 보면 못 누릅니다.
+   */
   async clickSel(a) {
     const { page } = current();
-    const loc = page.locator(a.selector);
-    const count = await loc.count();
-    const visible = count ? await loc.first().isVisible().catch(() => false) : false;
+    const hit = await findBoth(page, a.selector);
+    const loc = hit.target.locator(a.selector);
     let clicked = false;
     let error = '';
     try {
@@ -114,13 +117,44 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
       error = String(e).split('\n').slice(0, 3).join(' ');
     }
     await page.waitForTimeout(400);
-    return { selector: a.selector, count, visible, clicked, error, url: page.url() };
+
+    return {
+      selector: a.selector,
+      count: hit.count,
+      visible: hit.visible,
+      inFrame: hit.inFrame,
+      clicked,
+      error,
+      url: page.url(),
+    };
+  },
+
+  /**
+   * 선택자로 글자를 칩니다. **바깥 문서와 iframe 안쪽을 둘 다 찾습니다.**
+   * (ref 로 치는 것은 아래 `type` 이고, 그쪽은 이미 iframe 을 압니다.)
+   */
+  async typeSel(a) {
+    const { page } = current();
+    const hit = await findBoth(page, a.selector);
+    const el = hit.target.locator(a.selector).first();
+    await el.click({ timeout: a.timeoutMs ?? 8_000 });
+    if (a.clear !== false) await el.fill('');
+    for (const ch of String(a.value)) {
+      await el.pressSequentially(ch, { delay: a.delayMs ?? 60 + Math.floor(Math.random() * 80) });
+    }
+    if (a.submit) await el.press('Enter');
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+
+    return { selector: a.selector, count: hit.count, inFrame: hit.inFrame, url: page.url() };
   },
 
   /** 요소가 어떤 상태인지 봅니다. 왜 클릭이 안 되는지 진단할 때 씁니다. */
   async probe(a) {
     const { page } = current();
-    return page.evaluate((sel) => {
+    // 요소가 iframe 안에 있으면 그 안에서 봅니다. 바깥에서 보면 0개로 나옵니다.
+    const hit = await findBoth(page, a.selector);
+
+    return hit.target.evaluate((sel) => {
       const els = Array.from(document.querySelectorAll(sel)).slice(0, 5);
       return els.map((el) => {
         const r = el.getBoundingClientRect();

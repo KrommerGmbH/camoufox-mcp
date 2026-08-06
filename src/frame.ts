@@ -94,3 +94,47 @@ export async function targetForRef(page: Page, ref: string): Promise<Target> {
   const f = await contentTarget(page);
   return f.target;
 }
+
+export interface SelectorHit {
+  /** 실제로 쓸 대상. 못 찾았으면 바깥 문서를 그대로 돌려줍니다. */
+  target: Target;
+  /** 그 대상에서 몇 개 맞았나 */
+  count: number;
+  /** 그중 눈에 보이는 것이 하나라도 있나 */
+  visible: boolean;
+  /** iframe 안에서 찾았나 */
+  inFrame: boolean;
+}
+
+/**
+ * **선택자 하나를 바깥 문서와 iframe 안쪽에서 둘 다 찾습니다.**
+ *
+ * 왜 필요한가: 네이버 판매관리 화면(발주확인·정산 등)은 내용이 통째로 `iframe` 안에 있습니다.
+ * Playwright 의 `page.locator()` 는 **iframe 을 넘어가지 않습니다.**
+ * 그래서 바깥에서만 찾으면 "검색" 버튼이 화면에 뻔히 보이는데도 못 눌러서 시간초과로 죽습니다
+ * (2026-08-06 실측: 발주확인 화면의 `검색` 을 8초 기다리다 못 누름).
+ *
+ * 고르는 법: **눈에 보이는 것이 있는 쪽**을 씁니다. 양쪽 다 보이면 **iframe 안쪽이 이깁니다** —
+ * 바깥에는 왼쪽 메뉴의 같은 글자(예: `주문통합검색`)가 걸리기 쉽기 때문입니다.
+ */
+export async function findBoth(page: Page, selector: string): Promise<SelectorHit> {
+  const f = await contentTarget(page);
+  // iframe 안쪽을 먼저 봅니다. 위 주석의 이유로 안쪽이 이깁니다.
+  const 볼곳: Array<{ target: Target; inFrame: boolean }> = [];
+  if (f.inFrame) 볼곳.push({ target: f.target, inFrame: true });
+  볼곳.push({ target: page, inFrame: false });
+
+  let 첫결과: SelectorHit | null = null;
+  for (const { target, inFrame } of 볼곳) {
+    const loc = target.locator(selector);
+    const count = await loc.count().catch(() => 0);
+    const visible = count > 0 ? await loc.first().isVisible().catch(() => false) : false;
+    const hit = { target, count, visible, inFrame };
+    if (첫결과 === null) 첫결과 = hit;
+    if (visible) return hit;
+    // 안 보이더라도 개수가 있으면 그쪽을 기억해 둡니다(전혀 없는 쪽보다는 낫습니다).
+    if (count > 0 && 첫결과.count === 0) 첫결과 = hit;
+  }
+
+  return 첫결과 ?? { target: page, count: 0, visible: false, inFrame: false };
+}
