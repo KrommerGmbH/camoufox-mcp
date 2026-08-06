@@ -71,7 +71,11 @@ export interface LoginResult {
 let token = '';
 let tokenUntil = 0;
 
-async function shopware<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
+/**
+ * 샵웨어 창구를 부릅니다. 토큰은 여기서 받아 두고 다시 씁니다.
+ * `secret.ts` 도 같은 길로 부르므로 밖에서도 쓸 수 있게 열어 둡니다.
+ */
+export async function shopware<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   if (!BASE || !CLIENT_ID || !CLIENT_SECRET) {
     throw new Error(
       'SHOPWARE_API_URL · SHOPWARE_API_CLIENT_ID · SHOPWARE_API_CLIENT_SECRET 을 이 서버의 환경변수로 주세요.\n' +

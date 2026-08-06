@@ -5,6 +5,7 @@ import { extractFromHtml } from './extract.js';
 import { assertWebUrl } from './guard.js';
 import { apiCall } from './api.js';
 import { login } from './login.js';
+import { typeSecret } from './secret.js';
 import { closeLayerPopups } from './popup.js';
 import { contentTarget, findBoth, snapshotBoth, targetForRef } from './frame.js';
 import { byRef, snapshot } from './snapshot.js';
@@ -80,6 +81,16 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
   },
 
   /**
+   * 화면이 따로 묻는 비밀번호를 대신 칩니다(주문 엑셀 등).
+   * **비밀번호를 주지 마세요 — 줄 수도 없습니다.** 표에서 꺼내 바로 화면에 칩니다.
+   * 돌아오는 것은 쳤다/못 쳤다와 이유뿐입니다.
+   */
+  async secret(a) {
+    const { page } = current();
+    return typeSecret(page, String(a.market ?? 'naver_smartstore'), String(a.purpose ?? ''));
+  },
+
+  /**
    * 화면 안에서 그 사이트의 API 를 직접 부릅니다. **묵은 값을 안 받습니다**(api.ts 의 no-store 설명 참고).
    *
    * 값이 필요할 때는 화면을 새로 그리는 것보다 이게 낫습니다 — 빠르고, 안 깨지고,
@@ -99,7 +110,6 @@ const ops: Record<string, (a: Args) => Promise<unknown>> = {
     });
   },
 
-  /** 선택자로 바로 클릭. 진단용 + 정확한 선택자를 이미 아는 경우용. */
   /**
    * 선택자로 누릅니다. **바깥 문서와 iframe 안쪽을 둘 다 찾습니다.**
    * 네이버 판매관리 화면은 내용이 통째로 iframe 안이라, 바깥만 보면 못 누릅니다.
